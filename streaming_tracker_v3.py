@@ -63,7 +63,7 @@ class Config:
         'Netflix': 8,
         'Prime Video': 119,
         'Apple TV+': 350,
-        'Disney+ Hotstar': 337,
+        'Jiohotstar': 2336,
         'JioCinema': 220
     }
     
@@ -209,7 +209,7 @@ class DiscoverFlow:
                             'sort_by': 'vote_average.desc',
                             'vote_average.gte': 8.0,
                             'vote_count.gte': 500,
-                            'with_watch_providers': '8|119|350|337|220',
+                            'with_watch_providers': '8|119|350|2336|220',
                             'watch_region': 'IN'
                         },
                         timeout=30
@@ -313,7 +313,7 @@ class DiscoverFlow:
                             'vote_count.lte': 3000,
                             'vote_average.gte': 7.2,
                             f"{'primary_release_date' if media_type == 'movie' else 'first_air_date'}.gte": three_months_ago.strftime("%Y-%m-%d"),
-                            'with_watch_providers': '8|119|350|337|220',
+                            'with_watch_providers': '8|119|350|2336|220',
                             'watch_region': 'IN'
                         },
                         timeout=30
