@@ -1,0 +1,843 @@
+# streaming_tracker_v25.py - Production Version with Reddit Integration
+# Run with: python3 streaming_tracker_v25.py
+
+"""
+STREAMING TRACKER V2.5 - FINAL WITH REDDIT
+
+FEATURES:
+1. Real platform filtering via TMDb Watch Providers
+2. IMDB ratings from TMDb vote_average
+3. Fixed engagement double-counting
+4. Transcript analysis (optional, with fallback)
+5. Gemini Flash sentiment (with VADER fallback)
+6. Reddit discussion ingestion via RSS (no API key needed!)
+7. Better polarization detection (min 3 reviews)
+8. Recency-based dynamic weights
+9. Trending vs Catalog categorization
+
+DATABASE MIGRATION NEEDED:
+Run this SQL in Supabase:
+
+ALTER TABLE scores ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'catalog';
+CREATE INDEX IF NOT EXISTS idx_scores_category ON scores(category);
+"""
+
+import os
+import re
+import time
+import math
+import requests
+import numpy as np
+import feedparser
+import urllib.parse
+from datetime import datetime
+from typing import List, Dict, Optional
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+load_dotenv()
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+class Config:
+    YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
+    TMDB_API_KEY = os.getenv('TMDB_API_KEY')
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+    SUPABASE_URL = os.getenv('SUPABASE_URL')
+    SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+    
+    # Platform mapping: Name -> TMDb Provider ID for India
+    PLATFORMS = {
+        'Netflix': 8,
+        'Prime Video': 119,
+        'Apple TV+': 350,
+        'Disney+ Hotstar': 337,
+        'JioCinema': 220
+    }
+    
+    SEARCH_KEYWORDS = ['review 2025', 'honest review']
+    
+    # Quota management
+    MAX_VIDEOS_PER_PLATFORM = 3
+    TRENDING_LIMIT = 20
+    USE_TRANSCRIPTS = True
+    USE_REDDIT = True
+    STRICT_PLATFORM_FILTERING = True
+
+# ============================================================================
+# TMDB INTEGRATION
+# ============================================================================
+
+class TMDbResolver:
+    def __init__(self):
+        self.api_key = Config.TMDB_API_KEY
+        self.base_url = "https://api.themoviedb.org/3"
+    
+    def get_trending(self, media_type='all', time_window='week', limit=20) -> List[Dict]:
+        """Get trending content from TMDb"""
+        try:
+            response = requests.get(
+                f"{self.base_url}/trending/{media_type}/{time_window}",
+                params={'api_key': self.api_key},
+                timeout=30
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            trending = []
+            for item in data.get('results', [])[:limit]:
+                if item.get('media_type') not in ['movie', 'tv']:
+                    continue
+                
+                media_type = item['media_type']
+                title = item.get('title') if media_type == 'movie' else item.get('name')
+                
+                trending.append({
+                    'tmdb_id': item['id'],
+                    'title': title,
+                    'original_title': item.get('original_title') or item.get('original_name'),
+                    'content_type': media_type,
+                    'release_year': self._extract_year(
+                        item.get('release_date') if media_type == 'movie' else item.get('first_air_date')
+                    ),
+                    'poster_path': item.get('poster_path'),
+                    'overview': item.get('overview'),
+                    'popularity': item.get('popularity', 0),
+                    'imdb_rating': item.get('vote_average')
+                })
+            
+            print(f"\n✅ Found {len(trending)} trending titles")
+            return trending
+            
+        except Exception as e:
+            print(f"❌ TMDb trending error: {e}")
+            return []
+    
+    def get_watch_providers(self, tmdb_id: int, media_type: str, retries=3) -> List[int]:
+        """Get streaming platforms where content is available in India"""
+        for attempt in range(retries):
+            try:
+                response = requests.get(
+                    f"{self.base_url}/{media_type}/{tmdb_id}/watch/providers",
+                    params={'api_key': self.api_key},
+                    timeout=30
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                india_data = data.get('results', {}).get('IN', {})
+                providers = india_data.get('flatrate', [])
+                provider_ids = [p['provider_id'] for p in providers]
+                
+                time.sleep(0.5)
+                return provider_ids
+                
+            except Exception as e:
+                if attempt < retries - 1:
+                    print(f"  ⚠️  Provider check failed (attempt {attempt+1}/{retries}), retrying...")
+                    time.sleep(2)
+                else:
+                    print(f"  ⚠️  Provider check failed after {retries} attempts: {e}")
+                    return []
+        
+        return []
+    
+    def _extract_year(self, date_str):
+        if date_str:
+            try:
+                return int(date_str.split('-')[0])
+            except:
+                pass
+        return None
+
+# ============================================================================
+# SENTIMENT ANALYSIS
+# ============================================================================
+
+class SentimentAnalyzer:
+    def __init__(self):
+        gemini_key = os.getenv('GEMINI_API_KEY')
+        
+        # Always initialize VADER as fallback
+        self._init_vader()
+        
+        if gemini_key:
+            try:
+                from google import genai
+                self.client = genai.Client(api_key=gemini_key)
+                self.use_gemini = True
+                print("✅ Using Gemini 2.0 Flash (free & accurate)")
+            except Exception as e:
+                print(f"⚠️  Gemini init failed: {e}, using VADER")
+                self.use_gemini = False
+        else:
+            print("⚠️  No GEMINI_API_KEY, using VADER fallback")
+            self.use_gemini = False
+    
+    def _init_vader(self):
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+        self.vader = SentimentIntensityAnalyzer()
+    
+    def analyze(self, text: str) -> Dict:
+        if not text or len(text.strip()) < 10:
+            return {'sentiment': 0, 'confidence': 0.0}
+        
+        if self.use_gemini:
+            return self._gemini_analyze(text)
+        else:
+            return self._vader_analyze(text)
+    
+    def _gemini_analyze(self, text: str) -> Dict:
+        try:
+            prompt = f"""Analyze the sentiment of this movie/TV review.
+
+Review: {text[:4000]}
+
+Return ONLY a JSON object with this exact format:
+{{"sentiment": -1 or 0 or 1, "confidence": 0.0 to 1.0}}
+
+Where:
+- sentiment: -1 (negative), 0 (neutral), 1 (positive)
+- confidence: how certain you are (0.0 = unsure, 1.0 = very certain)"""
+
+            response = self.client.models.generate_content(
+                model='gemini-2.0-flash-exp',
+                contents=prompt
+            )
+            
+            result_text = response.text.strip()
+            
+            import json
+            result_text = result_text.replace('```json', '').replace('```', '').strip()
+            result = json.loads(result_text)
+            
+            sentiment = result.get('sentiment', 0)
+            confidence = result.get('confidence', 0.5)
+            
+            if sentiment not in [-1, 0, 1]:
+                sentiment = 0
+            confidence = max(0.0, min(1.0, float(confidence)))
+            
+            return {'sentiment': sentiment, 'confidence': confidence}
+            
+        except Exception as e:
+            print(f"  ⚠️  Gemini error: {e}, using VADER fallback")
+            return self._vader_analyze(text)
+    
+    def _vader_analyze(self, text: str) -> Dict:
+        scores = self.vader.polarity_scores(text)
+        compound = scores['compound']
+        
+        if compound >= 0.05:
+            sentiment = 1
+        elif compound <= -0.05:
+            sentiment = -1
+        else:
+            sentiment = 0
+        
+        confidence = min(1.0, abs(compound))
+        return {'sentiment': sentiment, 'confidence': confidence}
+
+# ============================================================================
+# REDDIT INGESTER
+# ============================================================================
+
+class RedditIngester:
+    def __init__(self):
+        self.sentiment = SentimentAnalyzer()
+        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+    
+        def get_reddit_discussions(self, title: str, media_type: str, max_threads: int = 3) -> List[Dict]:
+        """Search Reddit for discussion threads about the content"""
+        subreddit = "television" if media_type == 'tv' else "movies"
+        
+        try:
+            # Try multiple search queries
+            queries = [
+                f"{title} discussion",
+                f"{title} review",
+                f"{title} episode discussion" if media_type == 'tv' else f"{title} movie",
+                title
+            ]
+            
+            feed = None
+            for query_text in queries:
+                query = urllib.parse.quote(query_text)
+                rss_url = f"https://www.reddit.com/r/{subreddit}/search.rss?q={query}&restrict_sr=1&sort=relevance&t=all"
+                
+                print(f"     🔍 Trying: {query_text}")
+                
+                feed = feedparser.parse(rss_url)
+                
+                if feed.entries:
+                    print(f"     ✅ Found {len(feed.entries)} threads")
+                    break
+                
+                time.sleep(1)
+            
+            if not feed or not feed.entries:
+                print(f"     ⚠️  No Reddit threads found after trying all queries")
+                return [] 
+            threads = []
+            for entry in feed.entries[:max_threads]:
+                thread_title = entry.title
+                thread_url = entry.link
+                
+                print(f"     📝 Found: {thread_title[:60]}...")
+                
+                # Get comments from thread
+                thread_rss_url = thread_url + ".rss"
+                thread_feed = feedparser.parse(thread_rss_url)
+                
+                comments = []
+                for comment_entry in thread_feed.entries[:10]:
+                    comment_text = comment_entry.summary if hasattr(comment_entry, 'summary') else comment_entry.title
+                    
+                    # Clean HTML tags
+                    comment_text = re.sub(r'<[^>]+>', '', comment_text)
+                    
+                    if len(comment_text.strip()) > 20:
+                        sentiment_result = self.sentiment.analyze(comment_text)
+                        comments.append({
+                            'text': comment_text[:500],
+                            'sentiment': sentiment_result['sentiment'],
+                            'confidence': sentiment_result['confidence']
+                        })
+                
+                if comments:
+                    threads.append({
+                        'title': thread_title,
+                        'url': thread_url,
+                        'comments': comments
+                    })
+                
+                time.sleep(2)
+            
+            return threads
+            
+        except Exception as e:
+            print(f"     ⚠️  Reddit error: {e}")
+            return []
+    
+    def compute_reddit_score(self, threads: List[Dict]) -> float:
+        """Compute aggregate Reddit score from discussion threads"""
+        if not threads:
+            return 50.0
+        
+        all_sentiments = []
+        for thread in threads:
+            for comment in thread['comments']:
+                weighted_sentiment = comment['sentiment'] * comment['confidence']
+                all_sentiments.append(weighted_sentiment)
+        
+        if not all_sentiments:
+            return 50.0
+        
+        avg_sentiment = np.mean(all_sentiments)
+        reddit_score = (avg_sentiment + 1) * 50
+        
+        return reddit_score
+    
+    def save_reddit_reviews(self, content_id: int, threads: List[Dict]):
+        """Save Reddit comments as reviews"""
+        for thread in threads:
+            for comment in thread['comments']:
+                review_data = {
+                    'content_id': content_id,
+                    'source': 'reddit',
+                    'source_url': thread['url'],
+                    'source_id': thread['url'],
+                    'reviewer': 'Reddit User',
+                    'review_text': comment['text'],
+                    'sentiment': comment['sentiment'],
+                    'confidence': comment['confidence'],
+                    'youtube_weight': 0.5,
+                    'weighted_sentiment': comment['sentiment'] * comment['confidence'] * 0.5
+                }
+                
+                try:
+                    self.db.table('reviews').upsert(review_data, on_conflict='source,source_id').execute()
+                except Exception as e:
+                    print(f"     ⚠️  Failed to save Reddit review: {e}")
+
+# ============================================================================
+# SCORING ENGINE
+# ============================================================================
+
+class ScoringEngine:
+    @staticmethod
+    def youtube_weight(views: int, subscribers: int, comments: int) -> float:
+        """Combined authority + engagement weight"""
+        view_weight = min(1.0, math.log10(views + 1) / 6)
+        sub_weight = min(1.0, math.log10(subscribers + 1) / 6)
+        authority = view_weight * sub_weight
+        
+        engagement_boost = min(0.3, math.log10(comments + 1) / 10)
+        return min(1.0, authority + engagement_boost)
+    
+    @staticmethod
+    def normalize_imdb(rating: float) -> float:
+        if rating is None or rating < 0:
+            return 50
+        return max(0, min(100, (rating - 5) * 20))
+    
+    @staticmethod
+    def get_dynamic_weights(release_year: int) -> Dict:
+        """Dynamic weights based on content age (Recency Decay)"""
+        current_year = 2026
+        age = current_year - release_year if release_year else 10
+        
+        if age <= 1:
+            return {'youtube': 0.65, 'imdb': 0.35}
+        elif age <= 3:
+            return {'youtube': 0.50, 'imdb': 0.50}
+        elif age <= 5:
+            return {'youtube': 0.40, 'imdb': 0.60}
+        else:
+            return {'youtube': 0.30, 'imdb': 0.70}
+    
+    @staticmethod
+    def get_category(release_year: int) -> str:
+        """Categorize content as Trending or Catalog"""
+        current_year = 2026
+        age = current_year - release_year if release_year else 10
+        
+        if age <= 2:
+            return "trending"
+        else:
+            return "catalog"
+    
+    @staticmethod
+    def get_label(score: float) -> str:
+        if score >= 80:
+            return "🔥 Must Watch"
+        elif score >= 65:
+            return "👍 Worth Your Time"
+        elif score >= 50:
+            return "🍿 Genre Fans Only"
+        return "💤 Skip"
+
+# ============================================================================
+# YOUTUBE INGESTER
+# ============================================================================
+
+class YouTubeIngester:
+    def __init__(self):
+        self.api_key = Config.YOUTUBE_API_KEY
+        self.base_url = "https://www.googleapis.com/youtube/v3"
+        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        self.tmdb = TMDbResolver()
+        self.sentiment = SentimentAnalyzer()
+        self.scoring = ScoringEngine()
+        self.reddit = RedditIngester() if Config.USE_REDDIT else None
+    
+    def search_videos(self, query: str, max_results: int = 5) -> List[Dict]:
+        try:
+            response = requests.get(
+                f"{self.base_url}/search",
+                params={
+                    'part': 'snippet',
+                    'q': query,
+                    'type': 'video',
+                    'maxResults': max_results,
+                    'key': self.api_key,
+                    'order': 'relevance'
+                },
+                timeout=30
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            return [{
+                'video_id': item['id']['videoId'],
+                'title': item['snippet']['title'],
+                'description': item['snippet']['description'],
+                'channel': item['snippet']['channelTitle'],
+                'channel_id': item['snippet']['channelId']
+            } for item in data.get('items', [])]
+        except Exception as e:
+            print(f"❌ YouTube search error: {e}")
+            return []
+    
+    def get_video_stats(self, video_id: str, channel_id: str) -> Dict:
+        try:
+            response = requests.get(
+                f"{self.base_url}/videos",
+                params={'part': 'statistics', 'id': video_id, 'key': self.api_key},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            if not data.get('items'):
+                return {}
+            
+            stats = data['items'][0]['statistics']
+            
+            time.sleep(0.5)
+            channel_response = requests.get(
+                f"{self.base_url}/channels",
+                params={'part': 'statistics', 'id': channel_id, 'key': self.api_key},
+                timeout=10
+            )
+            channel_response.raise_for_status()
+            channel_data = channel_response.json()
+            
+            subscribers = 0
+            if channel_data.get('items'):
+                subscribers = int(channel_data['items'][0]['statistics'].get('subscriberCount', 0))
+            
+            return {
+                'views': int(stats.get('viewCount', 0)),
+                'likes': int(stats.get('likeCount', 0)),
+                'comments': int(stats.get('commentCount', 0)),
+                'subscribers': subscribers
+            }
+        except Exception as e:
+            print(f"  ⚠️  Stats error: {e}")
+            return {}
+    
+    def get_transcript(self, video_id: str) -> Optional[str]:
+        if not Config.USE_TRANSCRIPTS:
+            return None
+        
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            transcript_text = ' '.join([entry['text'] for entry in transcript_list])
+            return transcript_text[:4000]
+        except:
+            return None
+    
+    def process_trending_content(self, trending_data: Dict, platform: str, platform_id: int):
+        title = trending_data['title']
+        tmdb_id = trending_data['tmdb_id']
+        media_type = trending_data['content_type']
+        
+        print(f"\n🎬 {title} ({media_type})")
+        
+        providers = self.tmdb.get_watch_providers(tmdb_id, media_type)
+        
+        if not providers or platform_id not in providers:
+            print(f"   ⚠️  Not available on {platform}, skipping for accuracy")
+            return
+        
+        print(f"   ✅ Confirmed on {platform}")
+        
+        query = f"{title} {platform} review"
+        print(f"   🔎 Searching: {query}")
+        
+        videos = self.search_videos(query, max_results=2)
+        
+        if not videos:
+            print(f"   ⚠️  No videos found")
+            return
+        
+        content_data = {
+            'tmdb_id': tmdb_id,
+            'title': title,
+            'original_title': trending_data['original_title'],
+            'platform': platform,
+            'content_type': media_type,
+            'release_year': trending_data['release_year'],
+            'imdb_rating': trending_data['imdb_rating'],
+            'poster_path': trending_data['poster_path'],
+            'overview': trending_data['overview']
+        }
+        
+        try:
+            content_result = self.db.table('content').upsert(content_data, on_conflict='tmdb_id').execute()
+            content_id = content_result.data[0]['id']
+        except Exception as e:
+            print(f"   ❌ DB error: {e}")
+            return
+        
+        for video in videos:
+            print(f"     📺 {video['title'][:50]}...")
+            
+            stats = self.get_video_stats(video['video_id'], video['channel_id'])
+            
+            if not stats:
+                continue
+            
+            transcript = self.get_transcript(video['video_id'])
+            
+            if transcript:
+                review_text = transcript
+                print(f"     📝 Using transcript ({len(transcript)} chars)")
+            else:
+                review_text = f"{video['title']} {video['description']}"
+                print(f"     📝 Using title + description")
+            
+            sentiment_result = self.sentiment.analyze(review_text)
+            print(f"     💭 Sentiment: {sentiment_result['sentiment']} (conf: {sentiment_result['confidence']:.2f})")
+            
+            youtube_weight = self.scoring.youtube_weight(
+                stats.get('views', 0),
+                stats.get('subscribers', 0),
+                stats.get('comments', 0)
+            )
+            
+            weighted_sentiment = sentiment_result['sentiment'] * sentiment_result['confidence'] * youtube_weight
+            
+            review_data = {
+                'content_id': content_id,
+                'source': 'youtube',
+                'source_url': f"https://youtube.com/watch?v={video['video_id']}",
+                'source_id': video['video_id'],
+                'reviewer': video['channel'],
+                'reviewer_subscribers': stats.get('subscribers', 0),
+                'review_text': review_text[:1000],
+                'sentiment': sentiment_result['sentiment'],
+                'confidence': sentiment_result['confidence'],
+                'views': stats.get('views', 0),
+                'likes': stats.get('likes', 0),
+                'comments_count': stats.get('comments', 0),
+                'youtube_weight': youtube_weight,
+                'weighted_sentiment': weighted_sentiment
+            }
+            
+            try:
+                self.db.table('reviews').upsert(review_data, on_conflict='source,source_id').execute()
+                print(f"     💾 Saved")
+            except Exception as e:
+                print(f"     ❌ DB error: {e}")
+            
+            time.sleep(2)
+        
+        # Get Reddit discussions if enabled
+        if self.reddit:
+            print(f"   🔍 Searching Reddit discussions...")
+            threads = self.reddit.get_reddit_discussions(title, media_type)
+            
+            if threads:
+                reddit_score = self.reddit.compute_reddit_score(threads)
+                print(f"   📊 Reddit Score: {reddit_score:.1f} from {len(threads)} thread(s)")
+                self.reddit.save_reddit_reviews(content_id, threads)
+            else:
+                print(f"   ⚠️  No Reddit discussions found")
+    
+    def run(self):
+        print("\n" + "="*70)
+        print("🚀 YOUTUBE INGESTION V2.5")
+        print("="*70)
+        
+        print("\n📊 Discovering Trending Content from TMDb...")
+        trending_all = self.tmdb.get_trending('all', 'week', limit=Config.TRENDING_LIMIT)
+        
+        if not trending_all:
+            print("❌ Failed to get trending data")
+            return
+        
+        print(f"\n✅ Top 10 trending:")
+        for i, item in enumerate(trending_all[:10], 1):
+            print(f"   {i}. {item['title']} ({item['content_type']}) - IMDB: {item['imdb_rating']}")
+        
+        processed = 0
+        
+        for platform, platform_id in Config.PLATFORMS.items():
+            print(f"\n{'='*70}")
+            print(f"🎬 {platform.upper()} (Provider ID: {platform_id})")
+            print(f"{'='*70}")
+            
+            platform_processed = 0
+            
+            for trending_item in trending_all:
+                if platform_processed >= Config.MAX_VIDEOS_PER_PLATFORM:
+                    break
+                
+                self.process_trending_content(trending_item, platform, platform_id)
+                platform_processed += 1
+                time.sleep(2)
+            
+            processed += platform_processed
+        
+        print("\n" + "="*70)
+        print(f"✅ INGESTION COMPLETE")
+        print("="*70)
+
+# ============================================================================
+# SCORE COMPUTER
+# ============================================================================
+
+class ScoreComputer:
+    def __init__(self):
+        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        self.scoring = ScoringEngine()
+    
+    def compute_all(self):
+        print("\n" + "="*70)
+        print("📊 COMPUTING SCORES WITH RECENCY DECAY")
+        print("="*70)
+        
+        content_result = self.db.table('content').select('*').execute()
+        
+        if not content_result.data:
+            print("⚠️  No content found")
+            return
+        
+        for content in content_result.data:
+            content_id = content['id']
+            title = content['title']
+            
+            print(f"\n🎬 {title}")
+            
+            reviews_result = self.db.table('reviews').select('*').eq('content_id', content_id).execute()
+            
+            if not reviews_result.data:
+                print(f"   ⚠️  No reviews")
+                continue
+            
+            reviews = reviews_result.data
+            print(f"   📊 {len(reviews)} reviews")
+            
+            youtube_reviews = [r for r in reviews if r['source'] == 'youtube']
+            reddit_reviews = [r for r in reviews if r['source'] == 'reddit']
+            
+            if youtube_reviews:
+                weighted_sents = [r['weighted_sentiment'] for r in youtube_reviews]
+                avg = np.mean(weighted_sents)
+                youtube_score = (avg + 1) * 50
+            else:
+                youtube_score = 50
+            
+            if reddit_reviews:
+                weighted_sents = [r['weighted_sentiment'] for r in reddit_reviews]
+                avg = np.mean(weighted_sents)
+                reddit_score = (avg + 1) * 50
+            else:
+                reddit_score = 50
+            
+            imdb_score = self.scoring.normalize_imdb(content.get('imdb_rating'))
+            
+            # Dynamic weights based on age
+            weights = self.scoring.get_dynamic_weights(content.get('release_year'))
+            
+            # If we have Reddit data, adjust weights
+            has_reddit = reddit_score != 50 and len(reddit_reviews) > 0
+            
+            if has_reddit:
+                # Distribute weight: YouTube + Reddit share social weight, IMDB gets its weight
+                final_score = (
+                    weights['youtube'] * 0.5 * youtube_score +
+                    weights['youtube'] * 0.5 * reddit_score +
+                    weights['imdb'] * imdb_score
+                )
+            else:
+                # Original weights: YouTube, IMDB
+                final_score = (
+                    weights['youtube'] * youtube_score +
+                    weights['imdb'] * imdb_score
+                )
+            
+            label = self.scoring.get_label(final_score)
+            
+            # Determine category
+            category = self.scoring.get_category(content.get('release_year'))
+            
+            sentiments = [r['sentiment'] for r in reviews]
+            is_polarizing = len(sentiments) >= 3 and np.std(sentiments) > 0.7
+            
+            positive_ratio = sum(1 for r in reviews if r['sentiment'] == 1) / len(reviews)
+            
+            print(f"   🏆 {final_score:.1f} - {label}")
+            print(f"      YouTube: {youtube_score:.1f} | Reddit: {reddit_score:.1f} | IMDB: {imdb_score:.1f}")
+            print(f"      Weights: YT {weights['youtube']:.0%} | IMDB {weights['imdb']:.0%} | Category: {category.upper()}")
+            
+            if is_polarizing:
+                print(f"   🧨 POLARIZING")
+            
+            score_data = {
+                'content_id': content_id,
+                'youtube_score': round(youtube_score, 1),
+                'reddit_score': round(reddit_score, 1),
+                'imdb_score': round(imdb_score, 1),
+                'engagement_score': 0.0,
+                'final_score': round(final_score, 1),
+                'label': label,
+                'category': category,
+                'review_count': len(reviews),
+                'positive_ratio': round(positive_ratio, 2),
+                'is_polarizing': bool(is_polarizing),
+                'sentiment_std': round(np.std(sentiments), 2) if len(sentiments) > 1 else 0.0
+            }
+            
+            try:
+                self.db.table('scores').upsert(score_data, on_conflict='content_id').execute()
+                print(f"   ✅ Saved")
+            except Exception as e:
+                print(f"   ❌ Error: {e}")
+        
+        print("\n" + "="*70)
+        print("✅ SCORING COMPLETE")
+        print("="*70)
+        
+        self.show_top_ranked()
+    
+    def show_top_ranked(self):
+        print(f"\n🏆 TOP RANKED CONTENT")
+        print("="*70)
+        
+        result = self.db.table('scores').select('*, content(title, platform, content_type)').order('final_score', desc=True).limit(10).execute()
+        
+        if not result.data:
+            print("No scores found")
+            return
+        
+        for idx, row in enumerate(result.data, 1):
+            content = row['content']
+            title = content['title'] if content else 'Unknown'
+            platform = content['platform'] if content else 'Unknown'
+            ctype = '📺' if content.get('content_type') == 'tv' else '🎬'
+            category = row.get('category', 'catalog').upper()
+            
+            print(f"{idx:2}. {title[:35]:35} | {platform:15} {ctype} | {row['final_score']:5.1f} | {row['label']} | {category}")
+# ============================================================================
+# MAIN
+# ============================================================================
+
+def main():
+    print("\n" + "="*70)
+    print("🎬 STREAMING TRACKER V2.5 - FINAL WITH REDDIT")
+    print("="*70)
+    print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    if not Config.YOUTUBE_API_KEY:
+        print("❌ Missing YOUTUBE_API_KEY in .env")
+        return
+    
+    if not Config.TMDB_API_KEY:
+        print("❌ Missing TMDB_API_KEY in .env")
+        return
+    
+    print("✅ API keys loaded")
+    
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        print("✅ Transcript API available")
+    except ImportError:
+        print("⚠️  Transcript API not installed")
+        Config.USE_TRANSCRIPTS = False
+    
+    try:
+        import feedparser
+        print("✅ Feedparser available (Reddit enabled)")
+    except ImportError:
+        print("⚠️  Feedparser not installed - Reddit disabled")
+        Config.USE_REDDIT = False
+    
+    ingester = YouTubeIngester()
+    ingester.run()
+    
+    computer = ScoreComputer()
+    computer.compute_all()
+    
+    print("\n" + "="*70)
+    print("🎉 ALL DONE!")
+    print("="*70)
+    print("\nNext: streamlit run dashboard_v2.py")
+
+if __name__ == "__main__":
+    main()
