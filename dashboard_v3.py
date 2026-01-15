@@ -451,7 +451,8 @@ def render_discover_tab():
         '👻 Horror': 'genre_horror',
         '😂 Comedy': 'genre_comedy',
         '🎬 Drama': 'genre_drama',
-        '🔪 Thriller': 'genre_thriller'
+        '🔪 Thriller': 'genre_thriller',
+        '💘 Romance': 'genre_romance'
     }
     
     selected_category = st.sidebar.selectbox("Category", list(categories.keys()))
