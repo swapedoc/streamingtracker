@@ -11,6 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
+      - name: Wake Streamlit app
+        run: |
+          curl -s https://YOUR-APP.streamlit.app/ > /dev/null || true
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -31,3 +35,7 @@ jobs:
           OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
         run: |
           python3 streaming_tracker_v3.py
+      
+      - name: Keep Streamlit awake
+        run: |
+          curl -s https://YOUR-APP.streamlit.app/ > /dev/null || true
