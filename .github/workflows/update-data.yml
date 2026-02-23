@@ -11,6 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
+      - name: Wake Streamlit app
+        run: |
+          curl -s https://movietracker-swapriya.streamlit.app/ > /dev/null || true
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -27,5 +31,11 @@ jobs:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
         run: |
           python3 streaming_tracker_v3.py
+      
+      - name: Keep Streamlit awake
+        run: |
+          curl -s https://movietracker-swapriya.streamlit.app/ > /dev/null || true
