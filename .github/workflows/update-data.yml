@@ -13,7 +13,7 @@ jobs:
       
       - name: Wake Streamlit app
         run: |
-          curl -s https://YOUR-APP.streamlit.app/ > /dev/null || true
+          curl -s https://movietracker-swapriya.streamlit.app/ > /dev/null || true
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -38,4 +38,4 @@ jobs:
       
       - name: Keep Streamlit awake
         run: |
-          curl -s https://YOUR-APP.streamlit.app/ > /dev/null || true
+          curl -s https://movietracker-swapriya.streamlit.app/ > /dev/null || true
