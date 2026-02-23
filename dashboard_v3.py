@@ -12,6 +12,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Critic source display config
+CRITIC_META = {
+    'rotten_tomatoes':   {'icon': '🍅', 'name': 'Rotten Tomatoes'},
+    'decider':           {'icon': '🎬', 'name': 'Decider'},
+    'rogerebert':        {'icon': '⭐', 'name': 'RogerEbert'},
+    'vulture':           {'icon': '🐦', 'name': 'Vulture'},
+    'metacritic':        {'icon': '🎯', 'name': 'Metacritic'},
+    'bollywood_hungama': {'icon': '🎵', 'name': 'Bollywood Hungama'},
+}
+
+
 # Page config
 st.set_page_config(
     page_title="Streaming Tracker V3.0",
@@ -172,6 +183,7 @@ def render_watch_now_tab():
     total_content = len(scores_df)
     total_reviews = len(reviews_df) if reviews_df is not None else 0
     st.success(f"✅ Loaded {total_content} titles • {total_reviews} reviews")
+    st.caption("💡 Tip: Use sidebar filters to narrow results. Defaults show all titles.")
     
     # Sidebar filters
     st.sidebar.header("📺 Watch Now Filters")
@@ -187,7 +199,8 @@ def render_watch_now_tab():
     # Score range
     min_score = st.sidebar.slider("Minimum Score", 0, 100, 0)
     
-    # Show polarizing only
+    # Quick filters
+    hide_skip = st.sidebar.checkbox("Hide 💤 Skip titles", value=False)
     show_polarizing_only = st.sidebar.checkbox("🧨 Polarizing Content Only")
     
     # Apply filters
@@ -201,6 +214,9 @@ def render_watch_now_tab():
     
     filtered_df = filtered_df[filtered_df['final_score'] >= min_score]
     
+    if hide_skip:
+        filtered_df = filtered_df[filtered_df['label'] != '💤 Skip']
+
     if show_polarizing_only:
         filtered_df = filtered_df[filtered_df['is_polarizing'] == True]
     
@@ -211,7 +227,8 @@ def render_watch_now_tab():
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Total Content", len(filtered_df))
+        label = f"{len(filtered_df)} of {total_content}" if len(filtered_df) != total_content else str(total_content)
+        st.metric("Total Content", label)
     
     with col2:
         avg_score = filtered_df['final_score'].mean() if not filtered_df.empty else 0
@@ -336,6 +353,36 @@ def render_watch_now_tab():
                 with col_c:
                     if row['is_polarizing']:
                         st.markdown("🧨 **POLARIZING**")
+
+            # ── Critic verdicts panel ──────────────────────────────
+            if reviews_df is not None and 'content_id' in reviews_df.columns:
+                cid = row.get('content_id')
+                critic_rows = reviews_df[
+                    (reviews_df['content_id'] == cid) &
+                    (reviews_df['source'].isin(CRITIC_META.keys()))
+                ]
+                if not critic_rows.empty:
+                    st.markdown("---")
+                    st.markdown("**📰 Critics Say**")
+                    cols = st.columns(min(len(critic_rows), 3))
+                    for ci, (_, cr) in enumerate(critic_rows.iterrows()):
+                        meta = CRITIC_META.get(cr['source'], {'icon': '📝', 'name': cr['source']})
+                        sentiment = cr.get('sentiment', 0)
+                        verdict = cr.get('review_text', '') or ''
+                        # Show first 120 chars of verdict text as the blurb
+                        blurb = verdict[:120].strip()
+                        if blurb and not blurb.endswith(('.', '!', '?', '%')):
+                            blurb = blurb.rsplit(' ', 1)[0]  # don't cut mid-word
+                        badge = '👍' if sentiment == 1 else '👎' if sentiment == -1 else '🤷'
+                        url = cr.get('source_url', '')
+                        with cols[ci % 3]:
+                            label = f"{meta['icon']} **{meta['name']}**"
+                            if url:
+                                st.markdown(f"{label} — [{badge} Read]({url})")
+                            else:
+                                st.markdown(f"{label} — {badge}")
+                            if blurb:
+                                st.caption(blurb)
     
     # Analytics
     st.divider()
@@ -420,7 +467,7 @@ def render_discover_tab():
         return
     
     # Stats
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric("Total Content", len(discover_df))
@@ -434,6 +481,10 @@ def render_discover_tab():
         st.metric("💎 Hidden Gems", gems_count)
     
     with col4:
+        indian_count = len(discover_df[discover_df['category'] == 'indian'])
+        st.metric("🇮🇳 Indian", indian_count)
+    
+    with col5:
         genre_count = len(discover_df[discover_df['category'].str.startswith('genre_')])
         st.metric("🎭 Genre Picks", genre_count)
     
@@ -447,6 +498,7 @@ def render_discover_tab():
         'All': None,
         '⭐ Classics': 'classics',
         '💎 Hidden Gems': 'underdog',
+        '🇮🇳 Indian': 'indian',
         '🎭 Action': 'genre_action',
         '👻 Horror': 'genre_horror',
         '😂 Comedy': 'genre_comedy',
@@ -505,6 +557,8 @@ def render_discover_tab():
             return '⭐ Classic'
         elif cat == 'underdog':
             return '💎 Hidden Gem'
+        elif cat == 'indian':
+            return '🇮🇳 Indian'
         elif cat.startswith('genre_'):
             genre = cat.replace('genre_', '').title()
             return f'🎭 {genre}'
@@ -532,7 +586,7 @@ def render_discover_tab():
     st.subheader("📋 Detailed View")
     
     for idx, row in display_df.head(20).iterrows():
-        cat_emoji = '⭐' if row['category'] == 'classics' else '💎' if row['category'] == 'underdog' else '🎭'
+        cat_emoji = '⭐' if row['category'] == 'classics' else '💎' if row['category'] == 'underdog' else '🇮🇳' if row['category'] == 'indian' else '🎭'
         
         with st.expander(f"{cat_emoji} {row['title']} ({row['Year']}) - {row['Rating']}"):
             col1, col2 = st.columns([1, 2])
