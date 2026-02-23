@@ -254,15 +254,20 @@ class TMDbResolver:
                         continue
                     if item["id"] in seen_ids:
                         continue
-                    seen_ids.add(item["id"])
                     title = item.get("title") if media_type == "movie" else item.get("name")
                     release_date = item.get("release_date") if media_type == "movie" else item.get("first_air_date")
+                    release_year = self._extract_year(release_date)
+                    # Movies older than 3 years go to Discover, not Watch Now
+                    # TV is exempt — a show with a new season is always valid
+                    if media_type == "movie" and release_year and (current_year - release_year) > 3:
+                        continue
+                    seen_ids.add(item["id"])
                     all_results.append({
                         "tmdb_id": item["id"],
                         "title": title,
                         "original_title": item.get("original_title") or item.get("original_name"),
                         "content_type": media_type,
-                        "release_year": self._extract_year(release_date),
+                        "release_year": release_year,
                         "poster_path": item.get("poster_path"),
                         "overview": item.get("overview"),
                         "popularity": item.get("popularity", 0),
@@ -281,7 +286,7 @@ class TMDbResolver:
 
         # Step 2: top up with /discover but only last 2 years, for BOTH media types
         if len(all_results) < limit:
-            min_date = f"{current_year - 2}-01-01"
+            min_date = f"{current_year - 3}-01-01"
             for mt in ["movie", "tv"]:
                 if len(all_results) >= limit:
                     break
@@ -2259,8 +2264,13 @@ class ScoreComputer:
         print(f"   {total} titles, {len(reviews_result.data or [])} reviews loaded")
 
         score_batch = []
+        current_year = datetime.now().year
         for content in content_result.data:
             content_id = content['id']
+            # Safety net — skip old movies even if they made it into DB
+            release_year = content.get('release_year') or 0
+            if content.get('content_type') == 'movie' and release_year and (current_year - release_year) > 3:
+                continue
             reviews    = reviews_by_id.get(content_id, [])
             if not reviews:
                 continue
@@ -2853,6 +2863,31 @@ def cleanup_old_data(days_old=7):
     except Exception as e:
         print(f"   ⚡️ Cleanup failed: {e}")
 
+def cleanup_old_movies(db=None):
+    """Remove movies older than 3 years from content/scores/reviews."""
+    if db is None:
+        db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+    current_year = datetime.now().year
+    cutoff_year = current_year - 3
+    print(f"   🧹 Removing Watch Now movies older than {cutoff_year}...")
+    try:
+        old = db.table('content')             .select('id, title, release_year, content_type')             .eq('content_type', 'movie')             .lt('release_year', cutoff_year)             .execute()
+        if not old.data:
+            print("   ℹ️ No old movies to remove")
+            return
+        old_ids = [r['id'] for r in old.data]
+        removed_titles = [f"{r['title']} ({r['release_year']})" for r in old.data]
+        print(f"   🗑️  Removing: {', '.join(removed_titles)}")
+        BATCH = 50
+        for i in range(0, len(old_ids), BATCH):
+            chunk = old_ids[i:i+BATCH]
+            db.table('reviews').delete().in_('content_id', chunk).execute()
+            db.table('scores').delete().in_('content_id', chunk).execute()
+        db.table('content').delete().in_('id', old_ids).execute()
+        print(f"   ✅ Removed {len(old_ids)} old movies from Watch Now")
+    except Exception as e:
+        print(f"   ⚡️ Old movie cleanup failed: {e}")
+
 # ============================================================================
 # MAIN - RUN BOTH FLOWS
 # ============================================================================
@@ -2919,6 +2954,7 @@ def main():
     
     # Clean up old data
     cleanup_old_data(days_old=7)
+    cleanup_old_movies()
     
     # FLOW 1: DISCOVER (No reviews, just availability)
     print("\n🔍 STARTING DISCOVER FLOW...")
