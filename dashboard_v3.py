@@ -1236,7 +1236,7 @@ function makeCard(d, i, wIdx) {
 
   return `
 <div class="card fu" style="animation-delay:${delay}s;--plat:${platCol};--sc:${col};--sc-pct:${pct}%"
-  data-widx="${wIdx}" onclick="openPanelIdx(this.dataset.widx)">
+  data-widx="${wIdx}" onclick="openPanelIdx(this.dataset.widx, this)">
   <div class="poster">
     ${img
       ? `<img src="${img}" loading="lazy" alt=""/>`
@@ -1296,14 +1296,14 @@ function renderWatch() {
 }
 /* ── PANEL ── */
 /* ── PANEL — safe index-based lookup ── */
-function openPanelIdx(idxStr) {
+function openPanelIdx(idxStr, el) {
   const d = W[parseInt(idxStr)];
   if (!d) return;
-  openPanel(d);
+  openPanel(d, el);
 }
 
 let panelCount = 0;
-function openPanel(d) {
+function openPanel(d, clickedEl) {
   panelCount++;
   const col  = sc(d.score);
   const colA = scA(d.score);
@@ -1366,28 +1366,22 @@ function openPanel(d) {
   const panelEl = document.getElementById('panel');
   const overlayEl = document.getElementById('overlay');
   // Scroll is on the PARENT window (Streamlit page), not the iframe
-  // Find scroll position - check every possible container
-  let scrollY = 0;
+  // Use getBoundingClientRect on clicked card — works on all platforms
+  // because it gives position relative to the VISIBLE viewport, not the document
+  let offsetTop = 0;
   let viewH = window.innerHeight || 800;
-  let debugMsg = '';
-  try {
-    const parent = window.parent;
-    viewH = parent.innerHeight || viewH;
-    const candidates = [
-      ['section.stMain',            parent.document.querySelector('section.stMain')],
-      ['[data-testid="stMain"]',    parent.document.querySelector('[data-testid="stMain"]')],
-      ['documentElement',           parent.document.documentElement],
-      ['body',                      parent.document.body],
-    ];
-    for (const [name, el] of candidates) {
-      debugMsg += name + '=' + (el ? el.scrollTop : 'null') + ' ';
-      if (el && el.scrollTop > 0) { scrollY = el.scrollTop; break; }
-    }
-    alert(debugMsg + '| viewH=' + viewH);
-  } catch(e) { alert('ERR: ' + e.message); scrollY = 0; }
-  panelEl.style.top = scrollY + 'px';
+  try { viewH = window.parent.innerHeight || viewH; } catch(e) {}
+  if (clickedEl) {
+    const rect = clickedEl.getBoundingClientRect();
+    // rect.top is relative to iframe viewport
+    // We need to convert to absolute position in the full iframe document
+    offsetTop = rect.top + (window.scrollY || document.documentElement.scrollTop || 0);
+    // Clamp so panel doesn't go below where content ends
+    offsetTop = Math.max(0, offsetTop - 60);
+  }
+  panelEl.style.top = offsetTop + 'px';
   panelEl.style.height = viewH + 'px';
-  overlayEl.style.top = scrollY + 'px';
+  overlayEl.style.top = offsetTop + 'px';
   overlayEl.style.height = viewH + 'px';
   panelEl.scrollTop = 0;
   panelEl.classList.add('on');
