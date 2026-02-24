@@ -1,5 +1,5 @@
-# dashboard_v6.py — StreamIQ / Cinematic-Institutional
-# streamlit run dashboard_v6.py
+# dashboard_lg_tv_fixed.py — StreamIQ with LG TV Integration + All Features
+# streamlit run dashboard_lg_tv_fixed.py
 
 import streamlit as st
 import os, json, math
@@ -11,6 +11,588 @@ import streamlit.components.v1 as components
 load_dotenv()
 
 st.set_page_config(page_title="StreamIQ", page_icon="🎬", layout="wide", initial_sidebar_state="collapsed")
+
+# Custom loading screen CSS - Sci-Fi Cyberpunk version
+loading_screen = """
+<script>
+(function(){
+  // Make our iframe cover the full page like an overlay
+  var fe = window.frameElement;
+  if(fe){
+    fe.style.cssText = 'position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;z-index:999999!important;border:none!important;background:transparent';
+    // Fade out after 4.8s then remove
+    setTimeout(function(){ fe.style.opacity='0'; fe.style.transition='opacity 0.8s ease'; }, 4000);
+    setTimeout(function(){ fe.style.display='none'; }, 4800);
+  }
+})();
+</script>
+
+<style>
+/* Hide Streamlit's default loading */
+div[data-testid="stStatusWidget"] {
+    display: none !important;
+}
+
+#loading-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #000000;
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeOut 0.8s ease 4s forwards;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+@keyframes fadeOut {
+    to { opacity: 0; visibility: hidden; }
+}
+
+/* Matrix-style digital rain background */
+#matrix-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0.15;
+}
+
+/* Radial gradient overlay */
+.radial-overlay {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle at center, transparent 0%, rgba(0, 0, 0, 0.8) 70%);
+}
+
+/* Main container */
+.load-container {
+    position: relative;
+    z-index: 10;
+    text-align: center;
+}
+
+/* Holographic display */
+.holo-display {
+    position: relative;
+    padding: 50px 70px;
+    background: rgba(0, 0, 0, 0.8);
+    border: 1px solid;
+    border-image: linear-gradient(135deg, #E8C547, #00ffff, #E8C547) 1;
+    box-shadow: 0 0 30px rgba(232, 197, 71, 0.3), inset 0 0 30px rgba(0, 255, 255, 0.1);
+    clip-path: polygon(0% 5%, 5% 0%, 95% 0%, 100% 5%, 100% 95%, 95% 100%, 5% 100%, 0% 95%);
+    animation: holoPulse 3s ease-in-out infinite;
+}
+
+@keyframes holoPulse {
+    0%, 100% {
+        box-shadow: 0 0 30px rgba(232, 197, 71, 0.3), inset 0 0 30px rgba(0, 255, 255, 0.1);
+    }
+    50% {
+        box-shadow: 0 0 50px rgba(232, 197, 71, 0.5), inset 0 0 50px rgba(0, 255, 255, 0.2);
+    }
+}
+
+/* Corner indicators */
+.corner-indicator {
+    position: absolute;
+    width: 30px;
+    height: 30px;
+    border: 2px solid #E8C547;
+    opacity: 0.6;
+}
+
+.corner-tl {
+    top: -15px;
+    left: -15px;
+    border-right: none;
+    border-bottom: none;
+    animation: cornerPulse 2s ease-in-out infinite;
+}
+
+.corner-tr {
+    top: -15px;
+    right: -15px;
+    border-left: none;
+    border-bottom: none;
+    animation: cornerPulse 2s ease-in-out infinite 0.5s;
+}
+
+.corner-bl {
+    bottom: -15px;
+    left: -15px;
+    border-right: none;
+    border-top: none;
+    animation: cornerPulse 2s ease-in-out infinite 1s;
+}
+
+.corner-br {
+    bottom: -15px;
+    right: -15px;
+    border-left: none;
+    border-top: none;
+    animation: cornerPulse 2s ease-in-out infinite 1.5s;
+}
+
+@keyframes cornerPulse {
+    0%, 100% {
+        opacity: 0.4;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 1;
+        transform: scale(1.2);
+    }
+}
+
+/* Logo */
+.logo-container {
+    margin-bottom: 40px;
+}
+
+.logo-main {
+    font-size: 54px;
+    font-weight: 700;
+    letter-spacing: 12px;
+    position: relative;
+    display: inline-block;
+    font-family: 'Courier New', monospace;
+}
+
+.stream-text {
+    color: #ffffff;
+    text-shadow: 0 0 10px rgba(255, 255, 255, 1), 0 0 20px rgba(0, 255, 255, 0.8), 0 0 30px rgba(0, 255, 255, 0.6);
+    animation: cyberGlow 2s ease-in-out infinite;
+}
+
+.iq-text {
+    color: #E8C547;
+    text-shadow: 0 0 10px rgba(232, 197, 71, 1), 0 0 20px rgba(232, 197, 71, 0.8), 0 0 30px rgba(255, 165, 0, 0.6);
+    animation: goldGlow 2s ease-in-out infinite;
+}
+
+@keyframes cyberGlow {
+    0%, 100% {
+        text-shadow: 0 0 10px rgba(255, 255, 255, 1), 0 0 20px rgba(0, 255, 255, 0.8);
+    }
+    50% {
+        text-shadow: 0 0 20px rgba(255, 255, 255, 1), 0 0 40px rgba(0, 255, 255, 1), 0 0 60px rgba(0, 255, 255, 0.8);
+    }
+}
+
+@keyframes goldGlow {
+    0%, 100% {
+        text-shadow: 0 0 10px rgba(232, 197, 71, 1), 0 0 20px rgba(232, 197, 71, 0.8);
+    }
+    50% {
+        text-shadow: 0 0 20px rgba(232, 197, 71, 1), 0 0 40px rgba(255, 165, 0, 1), 0 0 60px rgba(255, 165, 0, 0.8);
+    }
+}
+
+.subtitle {
+    font-size: 9px;
+    color: #00ffff;
+    letter-spacing: 4px;
+    margin-top: 10px;
+    text-transform: uppercase;
+    opacity: 0.7;
+    text-shadow: 0 0 5px rgba(0, 255, 255, 0.5);
+    font-family: 'Courier New', monospace;
+}
+
+/* About section */
+.about-section {
+    margin: 30px 0;
+    padding: 18px 25px;
+    background: rgba(232, 197, 71, 0.05);
+    border: 1px solid rgba(232, 197, 71, 0.2);
+    border-left: 3px solid #E8C547;
+    text-align: left;
+    max-width: 480px;
+    margin-left: auto;
+    margin-right: auto;
+    animation: fadeInUp 1s ease-out 0.5s both;
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.about-title {
+    font-size: 10px;
+    color: #E8C547;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    font-weight: 600;
+    font-family: 'Courier New', monospace;
+}
+
+.about-text {
+    font-size: 12px;
+    color: #aaa;
+    line-height: 1.6;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.about-sources {
+    margin-top: 10px;
+    font-size: 10px;
+    color: #00ffff;
+    letter-spacing: 1px;
+    font-family: 'Courier New', monospace;
+}
+
+.about-sources span {
+    display: inline-block;
+    padding: 3px 8px;
+    margin: 3px;
+    background: rgba(0, 255, 255, 0.1);
+    border: 1px solid rgba(0, 255, 255, 0.3);
+    border-radius: 2px;
+}
+
+/* Central orb */
+.central-orb {
+    width: 90px;
+    height: 90px;
+    margin: 0 auto 30px;
+    position: relative;
+}
+
+.orb-core {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, #E8C547 0%, #FFA500 30%, transparent 70%);
+    box-shadow: 0 0 30px rgba(232, 197, 71, 0.8), 0 0 60px rgba(232, 197, 71, 0.5), inset 0 0 30px rgba(232, 197, 71, 0.3);
+    animation: orbPulse 2s ease-in-out infinite;
+}
+
+@keyframes orbPulse {
+    0%, 100% {
+        transform: scale(1);
+        box-shadow: 0 0 30px rgba(232, 197, 71, 0.8), 0 0 60px rgba(232, 197, 71, 0.5);
+    }
+    50% {
+        transform: scale(1.1);
+        box-shadow: 0 0 50px rgba(232, 197, 71, 1), 0 0 100px rgba(232, 197, 71, 0.7);
+    }
+}
+
+.orb-ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 120%;
+    height: 120%;
+    border: 2px solid rgba(0, 255, 255, 0.5);
+    border-radius: 50%;
+    animation: ringRotate 4s linear infinite;
+}
+
+.orb-ring:nth-child(2) {
+    width: 140%;
+    height: 140%;
+    animation-duration: 3s;
+    animation-direction: reverse;
+    border-color: rgba(232, 197, 71, 0.3);
+}
+
+@keyframes ringRotate {
+    0% {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+    100% {
+        transform: translate(-50%, -50%) rotate(360deg);
+    }
+}
+
+/* Data stream visualization */
+.data-stream {
+    margin: 25px 0;
+    height: 80px;
+    position: relative;
+    overflow: hidden;
+}
+
+.stream-line {
+    position: absolute;
+    height: 2px;
+    background: linear-gradient(90deg, transparent 0%, #E8C547 20%, #00ffff 50%, #E8C547 80%, transparent 100%);
+    animation: streamFlow 3s linear infinite;
+    box-shadow: 0 0 10px rgba(232, 197, 71, 0.8);
+}
+
+.stream-line:nth-child(1) {
+    top: 20%;
+    width: 80%;
+    animation-delay: 0s;
+}
+
+.stream-line:nth-child(2) {
+    top: 40%;
+    width: 60%;
+    animation-delay: 0.5s;
+    opacity: 0.7;
+}
+
+.stream-line:nth-child(3) {
+    top: 60%;
+    width: 70%;
+    animation-delay: 1s;
+    opacity: 0.5;
+}
+
+.stream-line:nth-child(4) {
+    top: 80%;
+    width: 50%;
+    animation-delay: 1.5s;
+    opacity: 0.6;
+}
+
+@keyframes streamFlow {
+    0% {
+        left: -100%;
+    }
+    100% {
+        left: 100%;
+    }
+}
+
+/* Terminal output */
+.terminal {
+    margin-top: 30px;
+    text-align: left;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    color: #00ff00;
+    max-width: 450px;
+}
+
+.terminal-line {
+    margin: 5px 0;
+    opacity: 0;
+    animation: terminalType 0.5s ease-out forwards;
+}
+
+@keyframes terminalType {
+    from {
+        opacity: 0;
+        transform: translateX(-5px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.terminal-line:nth-child(1) { animation-delay: 0.5s; }
+.terminal-line:nth-child(2) { animation-delay: 1s; }
+.terminal-line:nth-child(3) { animation-delay: 1.5s; }
+.terminal-line:nth-child(4) { animation-delay: 2s; }
+
+.cursor {
+    display: inline-block;
+    width: 8px;
+    height: 14px;
+    background: #00ff00;
+    animation: cursorBlink 1s step-end infinite;
+    margin-left: 2px;
+}
+
+@keyframes cursorBlink {
+    0%, 50% {
+        opacity: 1;
+    }
+    51%, 100% {
+        opacity: 0;
+    }
+}
+
+.success {
+    color: #00ff00;
+}
+
+.warning {
+    color: #E8C547;
+}
+
+.info {
+    color: #00ffff;
+}
+
+/* System info overlay */
+.system-info {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    font-family: monospace;
+    font-size: 9px;
+    color: #00ff00;
+    opacity: 0.5;
+    text-align: left;
+    line-height: 1.6;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .holo-display {
+        padding: 40px 30px;
+    }
+
+    .logo-main {
+        font-size: 36px;
+        letter-spacing: 6px;
+    }
+
+    .about-section {
+        padding: 15px 20px;
+        max-width: 100%;
+    }
+
+    .about-text {
+        font-size: 11px;
+    }
+
+    .about-sources span {
+        font-size: 9px;
+        padding: 2px 6px;
+    }
+
+    .terminal {
+        max-width: 280px;
+        font-size: 9px;
+    }
+
+    .central-orb {
+        width: 70px;
+        height: 70px;
+    }
+
+    .data-stream {
+        height: 60px;
+    }
+}
+</style>
+
+<div id="loading-screen">
+    <canvas id="matrix-canvas"></canvas>
+    <div class="radial-overlay"></div>
+
+    <div class="system-info">
+        SYS_ID: STRM-IQ-4200<br>
+        STATUS: ONLINE<br>
+        CONN: SECURED
+    </div>
+
+    <div class="load-container">
+        <div class="holo-display">
+            <div class="corner-indicator corner-tl"></div>
+            <div class="corner-indicator corner-tr"></div>
+            <div class="corner-indicator corner-bl"></div>
+            <div class="corner-indicator corner-br"></div>
+
+            <div class="logo-container">
+                <div class="logo-main">
+                    <span class="stream-text">STREAM</span><span class="iq-text">IQ</span>
+                </div>
+                <div class="subtitle">// QUANTUM INTELLIGENCE PLATFORM //</div>
+            </div>
+
+            <div class="central-orb">
+                <div class="orb-ring"></div>
+                <div class="orb-ring"></div>
+                <div class="orb-core"></div>
+            </div>
+
+            <div class="about-section">
+                <div class="about-title">// System Purpose</div>
+                <div class="about-text">
+                    Smart streaming tracker powered by AI. Discover what's worth watching right now with aggregated insights from YouTube reviews, Reddit discussions, and Rotten Tomatoes ratings. Get direct links to stream instantly.
+                </div>
+                <div class="about-sources">
+                    <span>YouTube</span>
+                    <span>Reddit</span>
+                    <span>Rotten Tomatoes</span>
+                    <span>Direct Links</span>
+                </div>
+            </div>
+
+            <div class="data-stream">
+                <div class="stream-line"></div>
+                <div class="stream-line"></div>
+                <div class="stream-line"></div>
+                <div class="stream-line"></div>
+            </div>
+
+            <div class="terminal">
+                <div class="terminal-line">&gt; <span class="success">INIT:</span> Neural network initialized...</div>
+                <div class="terminal-line">&gt; <span class="info">LOAD:</span> Loading quantum protocols...</div>
+                <div class="terminal-line">&gt; <span class="warning">SYNC:</span> Synchronizing data streams...</div>
+                <div class="terminal-line">&gt; <span class="success">READY:</span> System online<span class="cursor"></span></div>
+            </div>
+            <div style="margin-top:18px;font-family:'Courier New',monospace;font-size:9px;color:rgba(255,255,255,0.15);letter-spacing:3px;text-transform:uppercase;">made by swapnil</div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Matrix digital rain effect
+(function() {
+    const canvas = document.getElementById('matrix-canvas');
+    const ctx = canvas.getContext('2d');
+
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const chars = 'STREAMIQ01234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const fontSize = 14;
+    const columns = canvas.width / fontSize;
+    const drops = Array(Math.floor(columns)).fill(1);
+
+    function drawMatrix() {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#E8C547';
+        ctx.font = fontSize + 'px monospace';
+
+        for (let i = 0; i < drops.length; i++) {
+            const text = chars[Math.floor(Math.random() * chars.length)];
+            ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+
+            if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) {
+                drops[i] = 0;
+            }
+            drops[i]++;
+        }
+    }
+
+    const interval = setInterval(drawMatrix, 50);
+    
+    // Stop after 4 seconds (when loading screen fades)
+    setTimeout(() => clearInterval(interval), 4000);
+})();
+</script>
+"""
+
+components.html(loading_screen, height=1)
+
 st.markdown("""<style>
 #MainMenu,footer,header,[data-testid="stToolbar"],[data-testid="stSidebar"]{display:none!important}
 .block-container{padding:0!important;max-width:100%!important}
@@ -36,6 +618,7 @@ def load_all_data():
                 'tmdb_id': c.get('tmdb_id'), 'poster_path': c.get('poster_path'),
                 'overview': str(c.get('overview') or '')[:300],
                 'imdb_rating': c.get('imdb_rating'), 'discovery_source': c.get('discovery_source','catalog'),
+                'stream_url': str(c.get('stream_url') or ''),
             })
         return watch, dr.data or [], None
     except Exception as e:
@@ -65,7 +648,8 @@ def to_js(data, disc=False):
                 'type': safe(r.get('content_type')), 'year': safe(r.get('release_year')),
                 'rating': float(rating or 0), 'poster': safe(r.get('poster_path')),
                 'overview': safe(r.get('overview',''))[:280], 'category': safe(r.get('category')),
-                'tmdb_id': safe(r.get('tmdb_id'))})
+                'tmdb_id': safe(r.get('tmdb_id')),
+                'stream_url': safe(r.get('stream_url', ''))})
         else:
             out.append({'title': safe(r.get('title')), 'platform': safe(r.get('platform')),
                 'type': safe(r.get('content_type')), 'year': safe(r.get('release_year')),
@@ -75,12 +659,14 @@ def to_js(data, disc=False):
                 'trending': safe(r.get('discovery_source')).lower() == 'trending',
                 'polarizing': bool(r.get('is_polarizing', False)),
                 'yt': float(r.get('youtube_score') or 0), 'reddit': float(r.get('reddit_score') or 0),
-                'imdb': float(r.get('imdb_score') or 0), 'reviews': int(r.get('review_count') or 0)})
+                'imdb': float(r.get('imdb_score') or 0), 'reviews': int(r.get('review_count') or 0),
+                'stream_url': safe(r.get('stream_url', ''))})
     return json.dumps(out)
 
 WJ = to_js(watch_data)
 DJ = to_js(discover_data, disc=True)
 TS = datetime.now().strftime('%d %b %Y · %H:%M')
+
 
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -820,6 +1406,18 @@ body:has(.dc:hover) #cursor-ring {
   transition: opacity 0.2s;
 }
 .panel-link:hover { opacity: 0.65; }
+.panel-actions {
+  display: flex; align-items: center; gap: 20px;
+  margin-top: 10px; flex-wrap: wrap;
+}
+.panel-watch-btn {
+  font-family: var(--mono); font-size: 0.6rem;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  text-decoration: none; padding: 7px 18px;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-weight: 700; transition: opacity 0.2s;
+}
+.panel-watch-btn:hover { opacity: 0.8; }
 
 /* ═══════════════════════════════════════════════════
    DISCOVER GRID
@@ -833,7 +1431,7 @@ body:has(.dc:hover) #cursor-ring {
   display: flex; flex-direction: column;
   background: var(--v1); border: 1px solid var(--v3);
   border-radius: 2px; overflow: hidden;
-  text-decoration: none; color: inherit;
+  color: inherit;
   transition: transform 0.4s var(--ease), border-color 0.25s, box-shadow 0.4s var(--ease);
   position: relative;
 }
@@ -889,6 +1487,16 @@ body:has(.dc:hover) #cursor-ring {
   background: rgba(255,255,255,0.03);
   border: 1px solid currentColor; opacity: 0.8;
 }
+.jw-link {
+  font-family: var(--mono); font-size: 0.48rem;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--gold); text-decoration: none;
+  display: block; text-align: center;
+  padding: 2px 0;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+.jw-link:hover { opacity: 1; }
 
 /* ═══════════════════════════════════════════════════
    UTILITIES
@@ -984,6 +1592,123 @@ body:has(.dc:hover) #cursor-ring {
   }
   .panel-frame-id { font-size: 0.45rem; }
 }
+
+
+/* ═══════════════════════════════════════════════════
+   LG TV INTEGRATION STYLES
+═══════════════════════════════════════════════════ */
+
+.tv-send-btn {
+  flex: 1;
+  min-width: 200px;
+  padding: 12px 20px;
+  background: rgba(232,197,71,0.08);
+  color: var(--gold);
+  border: 1px solid rgba(232,197,71,0.25);
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.25s var(--ease);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: blur(8px);
+}
+
+.tv-send-btn:hover {
+  background: rgba(232,197,71,0.15);
+  border-color: var(--gold);
+  box-shadow: 0 0 20px rgba(232,197,71,0.15);
+  transform: translateY(-1px);
+}
+
+.tv-send-btn:active {
+  transform: translateY(0);
+}
+
+.tv-send-btn.sending {
+  background: rgba(16,185,129,0.12);
+  border-color: rgba(16,185,129,0.4);
+  color: #10B981;
+  pointer-events: none;
+}
+
+.tv-send-btn.error {
+  background: rgba(239,68,68,0.12);
+  border-color: rgba(239,68,68,0.4);
+  color: #EF4444;
+}
+
+.tv-icon {
+  font-size: 14px;
+  opacity: 0.8;
+  transition: opacity 0.3s;
+}
+
+.tv-send-btn:hover .tv-icon {
+  opacity: 1;
+}
+
+@keyframes subtle-pulse {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+.tv-send-btn.sending .tv-icon {
+  animation: subtle-pulse 1.5s ease-in-out infinite;
+}
+
+/* Toast Notification */
+.toast {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  background: rgba(12,12,16,0.95);
+  border: 1px solid rgba(232,197,71,0.35);
+  border-radius: 2px;
+  padding: 16px 24px;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+  z-index: 10000;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.6), 0 0 1px rgba(232,197,71,0.5);
+  transform: translateY(150%);
+  transition: transform 0.35s var(--ease);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toast.show {
+  transform: translateY(0);
+}
+
+.toast-icon {
+  font-size: 18px;
+  opacity: 0.9;
+}
+
+/* Compact TV button for Discover cards */
+.dc .tv-send-btn {
+  font-size: 0.56rem;
+  padding: 8px 14px;
+  min-width: auto;
+  width: 100%;
+  letter-spacing: 0.14em;
+}
+
+.dc .tv-icon {
+  font-size: 12px;
+}
 </style>
 </head>
 <body>
@@ -1022,6 +1747,7 @@ body:has(.dc:hover) #cursor-ring {
       <div class="fh"></div><div class="fh"></div><div class="fh"></div>
     </div>
     <span id="nav-ts"></span>
+    <span style="font-family:var(--mono);font-size:9px;color:#2a2a3a;letter-spacing:2px;text-transform:uppercase;margin-left:10px;">made by swapnil</span>
     <div class="frame-holes">
       <div class="fh"></div><div class="fh"></div><div class="fh"></div>
       <div class="fh"></div><div class="fh"></div><div class="fh"></div>
@@ -1038,7 +1764,6 @@ body:has(.dc:hover) #cursor-ring {
     <button class="pill" data-p="Prime Video"       onclick="sP('Prime Video',this)">Prime</button>
     <button class="pill" data-p="Jiohotstar"        onclick="sP('Jiohotstar',this)">Jiohotstar</button>
     <button class="pill" data-p="Apple TV+"         onclick="sP('Apple TV+',this)">Apple TV+</button>
-    <button class="pill" data-p="JioCinema"         onclick="sP('JioCinema',this)">JioCinema</button>
     <div class="ctrl-sep"></div>
     <button class="pill on" data-t="all"   onclick="sT('all',this)">All Types</button>
     <button class="pill" data-t="movie"    onclick="sT('movie',this)">Films</button>
@@ -1059,6 +1784,17 @@ body:has(.dc:hover) #cursor-ring {
 <!-- ── DISCOVER TAB ── -->
 <div id="tab-disc" style="display:none">
   <div class="stats-ribbon" id="ds"></div>
+  <div class="ctrl">
+    <button class="pill on" data-dp="all"         onclick="sdP('all',this)">All</button>
+    <button class="pill" data-dp="Netflix"         onclick="sdP('Netflix',this)">Netflix</button>
+    <button class="pill" data-dp="Prime Video"     onclick="sdP('Prime Video',this)">Prime</button>
+    <button class="pill" data-dp="Jiohotstar"      onclick="sdP('Jiohotstar',this)">Jiohotstar</button>
+    <button class="pill" data-dp="Apple TV+"       onclick="sdP('Apple TV+',this)">Apple TV+</button>
+    <div class="ctrl-sep"></div>
+    <button class="pill on" data-dt="all"   onclick="sdT('all',this)">All Types</button>
+    <button class="pill" data-dt="movie"    onclick="sdT('movie',this)">Films</button>
+    <button class="pill" data-dt="tv"       onclick="sdT('tv',this)">Series</button>
+  </div>
   <div class="ctrl">
     <button class="pill on" data-c="all"              onclick="sC('all',this)">All</button>
     <button class="pill" data-c="classics"             onclick="sC('classics',this)">Classics</button>
@@ -1347,7 +2083,28 @@ function openPanel(d, clickedEl) {
         ${brow('Reddit',   d.reddit, '#FF7A30')}
         ${brow('IMDb',     d.imdb,   '#E8C547')}
       </div>
-      ${tmdb ? `<a class="panel-link" href="${tmdb}" target="_blank">View on TMDb →</a>` : ''}
+      <div class="panel-actions">
+        ${d.stream_url ? (() => {
+          const u = d.stream_url;
+          const cfg = {
+            'netflix':    {bg:'#E50914', fg:'#fff'},
+            'primevideo': {bg:'#00A8E1', fg:'#fff'},
+            'hotstar':    {bg:'#1A1A2E', fg:'#00D4FF'},
+            'jiocinema':  {bg:'#7B2FBE', fg:'#fff'},
+            'apple':      {bg:'#f5f5f7', fg:'#000'},
+          };
+          const key = Object.keys(cfg).find(k => u.includes(k)) || '';
+          const c = cfg[key] || {bg:'#E8C547', fg:'#07070A'};
+          return `
+            <button class="tv-send-btn" onclick="sendToLGTV('${u}', '${d.title.replace(/'/g, "\\'")}', '${d.platform}')">
+              <span class="tv-icon">📺</span>
+              Send to LG TV
+            </button>
+            <a class="panel-watch-btn" href="${u}" target="_blank"
+               style="background:${c.bg};color:${c.fg}">&#9654; Watch on ${d.platform}</a>`;
+        })() : ''}
+        ${tmdb ? `<a class="panel-link" href="${tmdb}" target="_blank">View on TMDb →</a>` : ''}
+      </div>
     </div>`;
 
   // Safe text — works even if title/overview contains quotes, apostrophes, HTML, etc.
@@ -1398,9 +2155,14 @@ function wSr(v)  { wSearch=v; renderWatch(); }
 function wSo(v)  { wSort=v; renderWatch(); }
 
 /* ── DISCOVER ── */
+let dPlat = 'all';
+let dType = 'all';
+
 function getFD() {
   return D
     .filter(d => dCat==='all' || d.category===dCat)
+    .filter(d => dPlat==='all' || d.platform===dPlat)
+    .filter(d => dType==='all' || d.type===dType)
     .filter(d => !dSearch || d.title.toLowerCase().includes(dSearch.toLowerCase()))
     .sort((a,b) => b.rating - a.rating);
 }
@@ -1412,12 +2174,16 @@ function renderDisc() {
   if (!data.length) { el.innerHTML='<div class="empty">Nothing found</div>'; return; }
   el.innerHTML = data.slice(0,150).map((d,i) => {
     const img    = d.poster ? 'https://image.tmdb.org/t/p/w200'+d.poster : null;
-    const catCol = CC[d.category] || '#666';
-    const catLbl = CL[d.category] || d.category;
-    const tmdb   = d.tmdb_id ? `https://www.themoviedb.org/${d.type==='tv'?'tv':'movie'}/${d.tmdb_id}` : '#';
+    const catCol  = CC[d.category] || '#666';
+    const catLbl  = CL[d.category] || d.category;
+    const platCol = pc(d.platform);
+    const tmdb    = d.tmdb_id ? `https://www.themoviedb.org/${d.type==='tv'?'tv':'movie'}/${d.tmdb_id}` : '#';
+    const jwQuery = encodeURIComponent(d.title);
+    const jwUrl   = `https://www.justwatch.com/in/search?q=${jwQuery}`;
     const delay  = (i%30)*0.016;
     return `
-<a class="dc fu" href="${tmdb}" target="_blank" style="animation-delay:${delay}s;--cc:${catCol}">
+<div class="dc fu" style="animation-delay:${delay}s;--cc:${catCol}">
+  <a href="${tmdb}" target="_blank" style="text-decoration:none;color:inherit;display:flex;flex-direction:column;flex:1">
   <div class="dc-poster">
     ${img ? `<img src="${img}" loading="lazy" alt="${d.title}"/>` : `<div class="dc-poster-ph">🎬</div>`}
   </div>
@@ -1429,11 +2195,23 @@ function renderDisc() {
       <span class="dc-tag" style="color:${catCol};border-color:${catCol}">${catLbl}</span>
     </div>
   </div>
-</a>`;
+  </a>
+  <div style="padding:6px 12px 10px;border-top:1px solid var(--v3);display:flex;flex-direction:column;gap:8px">
+    ${d.stream_url
+      ? `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();sendToLGTV('${d.stream_url}', '${d.title.replace(/'/g, "\\'")}', '${d.platform}')">
+           <span class="tv-icon">📺</span> Send to TV
+         </button>
+         <a href="${d.stream_url}" target="_blank" class="jw-link" style="color:${platCol}">&#9654; Watch on ${d.platform}</a>`
+      : `<a href="${jwUrl}" target="_blank" class="jw-link">&#9654; Find on JustWatch</a>`
+    }
+  </div>
+</div>`;
   }).join('');
 }
 
 function sC(v,b) { dCat=v; document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on',x===b)); renderDisc(); }
+function sdP(v,b) { dPlat=v; document.querySelectorAll('[data-dp]').forEach(x=>x.classList.toggle('on',x===b)); renderDisc(); }
+function sdT(v,b) { dType=v; document.querySelectorAll('[data-dt]').forEach(x=>x.classList.toggle('on',x===b)); renderDisc(); }
 function dSr(v)  { dSearch=v; renderDisc(); }
 
 /* ── TAB SWITCH ── */
@@ -1453,6 +2231,61 @@ document.getElementById('nav-ts').textContent = ts;
 
 renderWatch();
 renderDisc();
+
+
+/* ═══════════════════════════════════════════════════
+   LG TV INTEGRATION FUNCTIONS
+═══════════════════════════════════════════════════ */
+
+let toastTimeout;
+function showToast(icon, message, duration = 3000) {
+  let toast = document.getElementById('tv-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'tv-toast';
+    toast.className = 'toast';
+    toast.innerHTML = '<span class="toast-icon"></span><span class="toast-msg"></span>';
+    document.body.appendChild(toast);
+  }
+  
+  toast.querySelector('.toast-icon').textContent = icon;
+  toast.querySelector('.toast-msg').textContent = message;
+  toast.classList.add('show');
+  
+  if (toastTimeout) clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => {
+    toast.classList.remove('show');
+  }, duration);
+}
+
+function sendToLGTV(streamUrl, title, platform) {
+  const btn = event.target.closest('.tv-send-btn');
+  if (!btn) return;
+  
+  const originalHTML = btn.innerHTML;
+  
+  // Show loading state
+  btn.classList.add('sending');
+  btn.innerHTML = '<span class="tv-icon">⏳</span> Sending...';
+  showToast('📺', 'Opening on LG C4...');
+  
+  // Simulate sending (in real implementation, this would use webOS protocol)
+  setTimeout(() => {
+    // Open the streaming URL
+    // On LG webOS browser, this will trigger app opening
+    window.open(streamUrl, '_blank');
+    
+    // Success state
+    btn.innerHTML = '<span class="tv-icon">✓</span> Playing on TV';
+    showToast('🎬', `Now playing: ${title}`, 4000);
+    
+    // Reset button after 3 seconds
+    setTimeout(() => {
+      btn.classList.remove('sending');
+      btn.innerHTML = originalHTML;
+    }, 3000);
+  }, 1000);
+}
 </script>
 </body>
 </html>"""
