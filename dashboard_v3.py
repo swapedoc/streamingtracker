@@ -959,6 +959,8 @@ body:has(.dc:hover) #cursor-ring {
   overflow: hidden;
   margin-bottom: 36px;
 }
+.srib-tap:hover { background:rgba(255,255,255,0.05)!important; transform:translateY(-2px); transition:all 0.2s ease; }
+.srib-tap:active { transform:scale(0.97); }
 .srib {
   background: var(--v1);
   padding: 22px 28px;
@@ -1568,7 +1570,9 @@ body:has(.dc:hover) #cursor-ring {
 
   /* stats ribbon - 2 columns on mobile */
   .stats-ribbon { grid-template-columns: repeat(3, 1fr); }
-  .srib { padding: 14px 12px; }
+  .srib-tap:hover { background:rgba(255,255,255,0.05)!important; transform:translateY(-2px); transition:all 0.2s ease; }
+.srib-tap:active { transform:scale(0.97); }
+.srib { padding: 14px 12px; }
   .srib-n { font-size: 1.8rem; }
   .srib::after { display: none; }
 
@@ -1918,8 +1922,11 @@ document.addEventListener('mousemove', e => {
 
 /* ── FILTER ── */
 function getFW() {
-  return W
-    .filter(d => wPlat==='all' || d.platform===wPlat)
+  let base = W;
+  if (window._worthFilter) base = base.filter(d => d.score >= 60);
+  if (window._polarFilter) base = base.filter(d => d.polarizing);
+  return base
+    .filter(d => wPlat===''all' || d.platform===wPlat)
     .filter(d => wType==='all'  || d.type===wType)
     .filter(d => !wSearch || d.title.toLowerCase().includes(wSearch.toLowerCase()))
     .sort((a,b) => {
@@ -1930,7 +1937,16 @@ function getFW() {
 }
 
 /* ── STATS RIBBON ── */
-function renderStats(data, elId, isDisc) {
+function function wWorth() {
+  window._worthFilter = true; window._polarFilter = false;
+  showTab('watch', document.querySelector('.tab')); renderWatch();
+}
+function wPolar() {
+  window._polarFilter = true; window._worthFilter = false;
+  showTab('watch', document.querySelector('.tab')); renderWatch();
+}
+
+renderStats(data, elId, isDisc) {
   let items;
   if (!isDisc) {
     const avg   = data.length ? (data.reduce((s,d)=>s+(d.score||0),0)/data.length).toFixed(0) : 0;
@@ -1940,8 +1956,8 @@ function renderStats(data, elId, isDisc) {
     items = [
       { n: data.length, l: 'Titles',        c: '#F5F5F0' },
       { n: avg,         l: 'Avg Score',      c: '#E8C547' },
-      { n: worth,       l: 'Worth Watching', c: '#8CB4CC' },
-      { n: pol,         l: 'Polarising',     c: '#FF4455' },
+      { n: worth,       l: 'Worth Watching', c: '#8CB4CC', action: "wWorth()" },
+      { n: pol,         l: 'Polarising',     c: '#FF4455', action: "wPolar()" },
       { n: revs,        l: 'Reviews',        c: '#7A7A90' },
     ];
     // update masthead KPIs
@@ -1955,17 +1971,18 @@ function renderStats(data, elId, isDisc) {
     D.forEach(d => cats[d.category] = (cats[d.category]||0)+1);
     const genres = Object.keys(cats).filter(k=>k.startsWith('genre_')).reduce((s,k)=>s+(cats[k]||0),0);
     items = [
-      { n: data.length,         l: 'Titles',      c: '#F5F5F0' },
-      { n: cats['classics']||0, l: 'Classics',    c: '#E8C547' },
-      { n: cats['underdog']||0, l: 'Hidden Gems', c: '#4DBFFF' },
-      { n: cats['indian']||0,   l: 'Hindi',       c: '#FF7043' },
-      { n: genres,              l: 'Genre Picks', c: '#B88EFF' },
+      { n: data.length,         l: 'Titles',      c: '#F5F5F0', action: "sC('all',null)" },
+      { n: cats['classics']||0, l: 'Classics',    c: '#E8C547', action: "sC('classics',null)" },
+      { n: cats['underdog']||0, l: 'Hidden Gems', c: '#4DBFFF', action: "sC('underdog',null)" },
+      { n: cats['indian']||0,   l: 'Hindi',       c: '#FF7043', action: "sC('indian',null)" },
+      { n: genres,              l: 'Genre Picks', c: '#B88EFF', action: "sC('genre_picks',null)" },
     ];
   }
   document.getElementById(elId).innerHTML = items.map(s =>
-    `<div class="srib" data-n="${s.n}" style="--c:${s.c}">
+    `<div class="srib${s.action ? ' srib-tap' : ''}" data-n="${s.n}" style="--c:${s.c}${s.action ? ';cursor:pointer' : ''}"
+      ${s.action ? `onclick="${s.action}"` : ''}>
       <div class="srib-n">${s.n}</div>
-      <div class="srib-l">${s.l}</div>
+      <div class="srib-l">${s.l}${s.action ? ' ↗' : ''}</div>
     </div>`
   ).join('');
 }
