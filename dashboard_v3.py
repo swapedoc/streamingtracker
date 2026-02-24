@@ -1366,15 +1366,25 @@ function openPanel(d) {
   const panelEl = document.getElementById('panel');
   const overlayEl = document.getElementById('overlay');
   // Scroll is on the PARENT window (Streamlit page), not the iframe
-  // Get scroll position from Streamlit's stMain container
+  // Find scroll position - check every possible container
   let scrollY = 0;
   let viewH = window.innerHeight || 800;
+  let debugMsg = '';
   try {
-    const stMain = window.parent.document.querySelector('section.stMain') ||
-                   window.parent.document.querySelector('[data-testid="stMain"]');
-    scrollY = stMain ? stMain.scrollTop : 0;
-    viewH = window.parent.innerHeight || viewH;
-  } catch(e) { scrollY = 0; }
+    const parent = window.parent;
+    viewH = parent.innerHeight || viewH;
+    const candidates = [
+      ['section.stMain',            parent.document.querySelector('section.stMain')],
+      ['[data-testid="stMain"]',    parent.document.querySelector('[data-testid="stMain"]')],
+      ['documentElement',           parent.document.documentElement],
+      ['body',                      parent.document.body],
+    ];
+    for (const [name, el] of candidates) {
+      debugMsg += name + '=' + (el ? el.scrollTop : 'null') + ' ';
+      if (el && el.scrollTop > 0) { scrollY = el.scrollTop; break; }
+    }
+    alert(debugMsg + '| viewH=' + viewH);
+  } catch(e) { alert('ERR: ' + e.message); scrollY = 0; }
   panelEl.style.top = scrollY + 'px';
   panelEl.style.height = viewH + 'px';
   overlayEl.style.top = scrollY + 'px';
