@@ -922,6 +922,56 @@ body:has(.dc:hover) #cursor-ring {
   content: ''; flex: 1; height: 1px; background: var(--v3);
 }
 
+
+/* ═══════════════════════════════════════════════════
+   MOBILE RESPONSIVE
+═══════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  #app { padding: 0 16px 80px; }
+
+  /* hide cursor on mobile */
+  #cursor, #cursor-ring { display: none; }
+  * { cursor: auto !important; }
+
+  /* masthead */
+  .mast { grid-template-columns: 1fr; gap: 12px; padding: 24px 0 0; }
+  .mast-right { align-items: flex-start; flex-direction: row; gap: 20px; }
+  .mast-kpi { gap: 16px; }
+  .logo-word { font-size: 2.8rem; }
+  .kpi-n { font-size: 1.4rem; }
+  .mast-ts { display: none; }
+
+  /* tabs */
+  .tabs { padding: 20px 0 0; margin-bottom: 24px; }
+  .tab { padding: 12px 16px 10px; font-size: 0.6rem; }
+  .tabs-frames { display: none; }
+
+  /* stats ribbon - 2 columns on mobile */
+  .stats-ribbon { grid-template-columns: repeat(3, 1fr); }
+  .srib { padding: 14px 12px; }
+  .srib-n { font-size: 1.8rem; }
+  .srib::after { display: none; }
+
+  /* controls - wrap nicely */
+  .ctrl { gap: 6px; margin-bottom: 20px; }
+  .pill { font-size: 0.5rem; padding: 5px 10px; }
+  .search-wrap { margin-left: 0; width: 100%; }
+  .search { width: 100% !important; }
+  .sort-sel { font-size: 0.5rem; }
+
+  /* card grid - 2 columns on mobile */
+  .watch-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .disc-grid  { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+
+  /* panel - full screen on mobile */
+  #panel {
+    width: 100vw !important;
+    height: 100% !important;
+  }
+  .panel-title { font-size: 1.6rem; }
+  .panel-big-score { font-size: 5rem; }
+  .panel-body { padding: 0 20px 40px; }
+}
 </style>
 </head>
 <body>
@@ -1296,16 +1346,19 @@ function openPanel(d) {
   const panelEl = document.getElementById('panel');
   const overlayEl = document.getElementById('overlay');
   // Scroll is on the PARENT window (Streamlit page), not the iframe
-  // stMain is Streamlit's actual scroll container
+  // Get scroll position from Streamlit's stMain container
   let scrollY = 0;
+  let viewH = window.innerHeight || 800;
   try {
-    const stMain = window.parent.document.querySelector('section.stMain');
+    const stMain = window.parent.document.querySelector('section.stMain') ||
+                   window.parent.document.querySelector('[data-testid="stMain"]');
     scrollY = stMain ? stMain.scrollTop : 0;
+    viewH = window.parent.innerHeight || viewH;
   } catch(e) { scrollY = 0; }
   panelEl.style.top = scrollY + 'px';
-  panelEl.style.height = '958px';
+  panelEl.style.height = viewH + 'px';
   overlayEl.style.top = scrollY + 'px';
-  overlayEl.style.height = '958px';
+  overlayEl.style.height = viewH + 'px';
   panelEl.scrollTop = 0;
   panelEl.classList.add('on');
   overlayEl.classList.add('on');
