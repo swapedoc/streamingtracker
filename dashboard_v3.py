@@ -586,6 +586,26 @@ div[data-testid="stStatusWidget"] {
     setTimeout(() => clearInterval(interval), 4000);
 })();
 </script>
+
+<script>
+// ── webOS BRIDGE: stays alive after loading screen fades ──
+// Listens for launch requests from the main app iframe
+window.addEventListener('message', function(e) {
+  if (!e.data || e.data.type !== 'webos_launch') return;
+  var appId = e.data.appId;
+  var url   = e.data.url;
+  if (typeof webOS !== 'undefined' && webOS.service) {
+    webOS.service.request('luna://com.webos.applicationManager', {
+      method: 'launch',
+      parameters: { id: appId },
+      onSuccess: function() { console.log('[bridge] launched', appId); },
+      onFailure: function() { window.top.location.href = url; }
+    });
+  } else {
+    window.top.location.href = url;
+  }
+});
+</script>
 """
 
 components.html(loading_screen, height=1)
@@ -2297,18 +2317,23 @@ function sendToLGTV(streamUrl, title, platform) {
     const key = Object.keys(WEBOS_IDS).find(k => (platform||'').toLowerCase().includes(k) || (streamUrl||'').includes(k));
     const appId = WEBOS_IDS[key];
     showToast('📺', 'Launching on TV...');
-    if (appId && typeof window.top.webOS !== 'undefined') {
-      window.top.webOS.service.request('luna://com.webos.applicationManager', {
+    // postMessage to ALL sibling iframes (loading screen bridge will catch it)
+    var msg = { type: 'webos_launch', appId: appId, url: streamUrl, title: title };
+    // broadcast to all iframes in the parent page
+    try {
+      var frames = window.top.document.querySelectorAll('iframe');
+      frames.forEach(function(f) { try { f.contentWindow.postMessage(msg, '*'); } catch(e){} });
+    } catch(e) {}
+    // also try direct webOS call in case we're somehow at top level
+    if (typeof webOS !== 'undefined' && webOS.service) {
+      webOS.service.request('luna://com.webos.applicationManager', {
         method: 'launch',
         parameters: { id: appId },
-        onSuccess: () => { showToast('🎬', 'Now playing: ' + title, 4000); done('<span class="tv-icon">✓</span> Launched!', 3000); },
-        onFailure: () => { window.top.location.href = streamUrl; done('<span class="tv-icon">✓</span> Opening...', 2000); }
+        onSuccess: function() {},
+        onFailure: function() {}
       });
-    } else {
-      // webOS but no API access — open URL in top frame
-      window.top.location.href = streamUrl;
-      done('<span class="tv-icon">✓</span> Opening...', 2000);
     }
+    done('<span class="tv-icon">✓</span> Launched!', 3000);
 
   /* ── iPhone / Android: deep link opens the app ── */
   } else if (isMobile) {
