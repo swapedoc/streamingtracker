@@ -2333,26 +2333,17 @@ function sendToLGTV(streamUrl, title, platform) {
 
   btn.classList.add('sending');
 
-  /* ── WEBOS BROWSER: launch app natively ── */
+  /* ── WEBOS BROWSER: postMessage to parent (top-level page) to launch app ── */
   if (isSmartTV && isWebOS && appId) {
     btn.innerHTML = '<span class="tv-icon">⏳</span> Launching...';
     showToast('📺', 'Opening ' + title + ' on TV...');
-
-    const req = webOS.service.request('luna://com.webos.applicationManager', {
-      method: 'launch',
-      parameters: { id: appId },
-      onSuccess: function() {
-        btn.innerHTML = '<span class="tv-icon">✓</span> Launched!';
-        showToast('🎬', 'Now playing: ' + title, 4000);
-        setTimeout(() => { btn.classList.remove('sending'); btn.innerHTML = originalHTML; }, 3000);
-      },
-      onFailure: function(err) {
-        // fallback to deep link in webOS browser
-        window.location.href = getDeepLink(streamUrl);
-        btn.innerHTML = '<span class="tv-icon">✓</span> Opening...';
-        setTimeout(() => { btn.classList.remove('sending'); btn.innerHTML = originalHTML; }, 3000);
-      }
-    });
+    // Send to parent Streamlit page which has webOS access at top level
+    window.parent.postMessage({ type: 'webos_launch', appId: appId, url: streamUrl, title: title }, '*');
+    setTimeout(() => {
+      btn.innerHTML = '<span class="tv-icon">✓</span> Launched!';
+      showToast('🎬', 'Now playing: ' + title, 4000);
+      setTimeout(() => { btn.classList.remove('sending'); btn.innerHTML = originalHTML; }, 3000);
+    }, 1000);
 
   /* ── NON-WEBOS SMART TV: use direct URL, most smart TV browsers handle deep links ── */
   } else if (isSmartTV) {
@@ -2387,4 +2378,29 @@ function sendToLGTV(streamUrl, title, platform) {
 </html>"""
 
 HTML = HTML.replace('__WJ__', WJ).replace('__DJ__', DJ)
+
+# Inject webOS top-level launcher — runs in Streamlit page (not iframe) so webOS API is accessible
+st.markdown("""
+<script>
+window.addEventListener('message', function(e) {
+  const d = e.data;
+  if (!d || d.type !== 'webos_launch') return;
+  if (typeof webOS !== 'undefined' && webOS.service) {
+    webOS.service.request('luna://com.webos.applicationManager', {
+      method: 'launch',
+      parameters: { id: d.appId },
+      onSuccess: function() { console.log('Launched:', d.appId); },
+      onFailure: function() {
+        // fallback: try deep link
+        window.location.href = d.url;
+      }
+    });
+  } else {
+    // Not webOS or API unavailable — fallback to URL
+    window.location.href = d.url;
+  }
+});
+</script>
+""", unsafe_allow_html=True)
+
 components.html(HTML, height=4400, scrolling=True)
