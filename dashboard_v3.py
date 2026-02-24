@@ -616,6 +616,7 @@ def load_all_data():
                 'overview': str(c.get('overview') or '')[:300],
                 'imdb_rating': c.get('imdb_rating'), 'discovery_source': c.get('discovery_source','catalog'),
                 'stream_url': str(c.get('stream_url') or ''),
+                'hindi_dub': bool(c.get('hindi_dub', False)),
             })
         return watch, dr.data or [], None
     except Exception as e:
@@ -646,7 +647,8 @@ def to_js(data, disc=False):
                 'rating': float(rating or 0), 'poster': safe(r.get('poster_path')),
                 'overview': safe(r.get('overview',''))[:280], 'category': safe(r.get('category')),
                 'tmdb_id': safe(r.get('tmdb_id')),
-                'stream_url': safe(r.get('stream_url', ''))})
+                'stream_url': safe(r.get('stream_url', '')),
+                'hindi_dub': bool(r.get('hindi_dub', False))})
         else:
             out.append({'title': safe(r.get('title')), 'platform': safe(r.get('platform')),
                 'type': safe(r.get('content_type')), 'year': safe(r.get('release_year')),
@@ -657,7 +659,8 @@ def to_js(data, disc=False):
                 'polarizing': bool(r.get('is_polarizing', False)),
                 'yt': float(r.get('youtube_score') or 0), 'reddit': float(r.get('reddit_score') or 0),
                 'imdb': float(r.get('imdb_score') or 0), 'reviews': int(r.get('review_count') or 0),
-                'stream_url': safe(r.get('stream_url', ''))})
+                'stream_url': safe(r.get('stream_url', '')),
+                'hindi_dub': bool(r.get('hindi_dub', False))})
     return json.dumps(out)
 
 WJ = to_js(watch_data)
@@ -953,6 +956,8 @@ body:has(.dc:hover) #cursor-ring {
   opacity: 0.6;
 }
 .srib::after { display: none; }
+.srib.on { background: rgba(255,255,255,0.05); outline: 1px solid var(--c, #fff); }
+.srib.on::before { opacity: 1; height: 2px; }
 .srib-n {
   font-family: var(--serif); font-style: italic;
   font-size: 2.8rem; line-height: 1; font-weight: 400;
@@ -1551,6 +1556,8 @@ body:has(.dc:hover) #cursor-ring {
   .srib { padding: 14px 12px; }
   .srib-n { font-size: 1.8rem; }
   .srib::after { display: none; }
+.srib.on { background: rgba(255,255,255,0.05); outline: 1px solid var(--c, #fff); }
+.srib.on::before { opacity: 1; height: 2px; }
 
   /* controls - wrap nicely */
   .ctrl { gap: 6px; margin-bottom: 20px; }
@@ -1738,6 +1745,7 @@ body:has(.dc:hover) #cursor-ring {
   <button class="tab on" onclick="showTab('watch',this)">Watch Now</button>
   <div class="tab-sep"></div>
   <button class="tab" onclick="showTab('disc',this)">Discover</button>
+
   <div class="tabs-frames">
     <div class="frame-holes">
       <div class="fh"></div><div class="fh"></div><div class="fh"></div>
@@ -1764,6 +1772,8 @@ body:has(.dc:hover) #cursor-ring {
     <button class="pill on" data-t="all"   onclick="sT('all',this)">All Types</button>
     <button class="pill" data-t="movie"    onclick="sT('movie',this)">Films</button>
     <button class="pill" data-t="tv"       onclick="sT('tv',this)">Series</button>
+    <div class="ctrl-sep"></div>
+    <button class="pill" id="w-hindi-btn" onclick="toggleHindiW(this)">🎙 Hindi Dub</button>
     <div class="search-wrap">
       <span class="search-icon">↳</span>
       <input class="search" placeholder="Search titles…" oninput="wSr(this.value)"/>
@@ -1790,6 +1800,8 @@ body:has(.dc:hover) #cursor-ring {
     <button class="pill on" data-dt="all"   onclick="sdT('all',this)">All Types</button>
     <button class="pill" data-dt="movie"    onclick="sdT('movie',this)">Films</button>
     <button class="pill" data-dt="tv"       onclick="sdT('tv',this)">Series</button>
+    <div class="ctrl-sep"></div>
+    <button class="pill" id="d-hindi-btn" onclick="toggleHindiD(this)">🎙 Hindi Dub</button>
   </div>
   <div class="ctrl">
     <button class="pill on" data-c="all"              onclick="sC('all',this)">All</button>
@@ -1820,6 +1832,7 @@ body:has(.dc:hover) #cursor-ring {
     <button class="panel-close-btn" onclick="closeP()">✕ &nbsp;Close</button>
   </div>
   <div id="pi"></div>
+
 </div>
 
 <script>
@@ -1901,6 +1914,7 @@ function getFW() {
   let base = W;
   if (window._wFilter === 'worth') base = base.filter(d => d.score >= 60);
   if (window._wFilter === 'polar') base = base.filter(d => d.polarizing);
+  if (window._wHindi) base = base.filter(d => d.hindi_dub === true);
   return base
     .filter(d => wPlat==='all' || d.platform===wPlat)
     .filter(d => wType==='all'  || d.type===wType)
@@ -1913,6 +1927,25 @@ function getFW() {
 }
 
 /* ── STATS RIBBON ── */
+var SRIB_COLORS = {
+  'ds': ['#F5F5F0','#E8C547','#4DBFFF','#FF7043','#B88EFF'],
+  'ws': ['#F5F5F0','#E8C547','#8CB4CC','#FF4455','#7A7A90']
+};
+function setSribActive(elId, idx) {
+  var colors = SRIB_COLORS[elId] || [];
+  document.querySelectorAll('#'+elId+' .srib').forEach(function(x,i){
+    if (i === idx) {
+      var c = colors[i] || '#fff';
+      x.style.background = 'rgba(255,255,255,0.07)';
+      x.style.borderTop = '2px solid ' + c;
+      x.style.boxShadow = '0 0 12px ' + c + '33';
+    } else {
+      x.style.background = '';
+      x.style.borderTop = '';
+      x.style.boxShadow = '';
+    }
+  });
+}
 function renderStats(data, elId, isDisc) {
   let items;
   if (!isDisc) {
@@ -1921,10 +1954,10 @@ function renderStats(data, elId, isDisc) {
     const pol   = data.filter(d=>d.polarizing).length;
     const revs  = data.reduce((s,d)=>s+d.reviews,0);
     items = [
-      { n: data.length, l: 'Titles',        c: '#F5F5F0' },
+      { n: data.length, l: 'Titles',        c: '#F5F5F0', fn: "window._wFilter=null;renderWatch();setSribActive('ws',0)" },
       { n: avg,         l: 'Avg Score',      c: '#E8C547' },
-      { n: worth,       l: 'Worth Watching', c: '#8CB4CC', fn: 'wWorth()' },
-      { n: pol,         l: 'Polarising',     c: '#FF4455', fn: 'wPolar()' },
+      { n: worth,       l: 'Worth Watching', c: '#8CB4CC', fn: "wWorth();setSribActive('ws',2)" },
+      { n: pol,         l: 'Polarising',     c: '#FF4455', fn: "wPolar();setSribActive('ws',3)" },
       { n: revs,        l: 'Reviews',        c: '#7A7A90' },
     ];
     // update masthead KPIs
@@ -1938,11 +1971,11 @@ function renderStats(data, elId, isDisc) {
     D.forEach(d => cats[d.category] = (cats[d.category]||0)+1);
     const genres = Object.keys(cats).filter(k=>k.startsWith('genre_')).reduce((s,k)=>s+(cats[k]||0),0);
     items = [
-      { n: data.length,         l: 'Titles',      c: '#F5F5F0', fn: "sC('all',null)"       },
-      { n: cats['classics']||0, l: 'Classics',    c: '#E8C547', fn: "sC('classics',null)"  },
-      { n: cats['underdog']||0, l: 'Hidden Gems', c: '#4DBFFF', fn: "sC('underdog',null)"  },
-      { n: cats['indian']||0,   l: 'Hindi',       c: '#FF7043', fn: "sC('indian',null)"    },
-      { n: genres,              l: 'Genre Picks', c: '#B88EFF', fn: "sC('genre_picks',null)"},
+      { n: data.length,         l: 'Titles',      c: '#F5F5F0', fn: "sC('all',null);setSribActive('ds',0)"       },
+      { n: cats['classics']||0, l: 'Classics',    c: '#E8C547', fn: "sC('classics',null);setSribActive('ds',1)"  },
+      { n: cats['underdog']||0, l: 'Hidden Gems', c: '#4DBFFF', fn: "sC('underdog',null);setSribActive('ds',2)"  },
+      { n: cats['indian']||0,   l: 'Hindi',       c: '#FF7043', fn: "sC('indian',null);setSribActive('ds',3)"    },
+      { n: genres,              l: 'Genre Picks', c: '#B88EFF', fn: "dCat='genre_picks';document.querySelectorAll('[data-c]').forEach(x=>x.classList.remove('on'));renderDisc();setSribActive('ds',4);"},
     ];
   }
   document.getElementById(elId).innerHTML = items.map(s =>
@@ -2072,6 +2105,7 @@ function openPanel(d, clickedEl) {
           <div class="panel-tags">
             ${d.trending   ? `<span class="ptag" style="background:rgba(232,197,71,0.1);color:#E8C547;border:1px solid rgba(232,197,71,0.2)">↑ Trending</span>` : ''}
             ${d.polarizing ? `<span class="ptag" style="background:rgba(255,68,85,0.1);color:#FF4455;border:1px solid rgba(255,68,85,0.2)">⚡ Polarising</span>` : ''}
+            ${d.hindi_dub  ? `<span class="ptag" style="background:rgba(255,112,67,0.1);color:#FF7043;border:1px solid rgba(255,112,67,0.2)">🎙 Hindi Dub</span>` : ''}
           </div>
         </div>
       </div>
@@ -2159,7 +2193,12 @@ let dType = 'all';
 
 function getFD() {
   return D
-    .filter(d => dCat==='all' || d.category===dCat)
+    .filter(d => !window._dHindi || d.hindi_dub === true)
+    .filter(d => {
+      if (dCat === 'all') return true;
+      if (dCat === 'genre_picks') return d.category && d.category.startsWith('genre_');
+      return d.category === dCat;
+    })
     .filter(d => dPlat==='all' || d.platform===dPlat)
     .filter(d => dType==='all' || d.type===dType)
     .filter(d => !dSearch || d.title.toLowerCase().includes(dSearch.toLowerCase()))
@@ -2192,6 +2231,7 @@ function renderDisc() {
     <div class="dc-foot">
       ${d.rating ? `<span class="dc-rating">✦ ${d.rating.toFixed(1)}</span>` : ''}
       <span class="dc-tag" style="color:${catCol};border-color:${catCol}">${catLbl}</span>
+      ${d.hindi_dub ? '<span class="dc-tag" style="color:#FF7043;border-color:#FF7043">🎙 Hindi</span>' : ''}
     </div>
   </div>
   </a>
@@ -2215,11 +2255,12 @@ function dSr(v)  { dSearch=v; renderDisc(); }
 
 /* ── TAB SWITCH ── */
 function showTab(t, btn) {
-  document.getElementById('tab-watch').style.display = t==='watch' ? '' : 'none';
-  document.getElementById('tab-disc').style.display  = t==='disc'  ? '' : 'none';
-  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b===btn));
-  if (t==='disc') renderDisc();
-}
+  document.getElementById('tab-watch').style.display  = t==='watch' ? '' : 'none';
+  document.getElementById('tab-disc').style.display   = t==='disc'  ? '' : 'none';
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b===btn));
+  if (t==='disc')  renderDisc();
+  }
+
 
 /* ── INIT ── */
 const now = new Date();
@@ -2277,6 +2318,19 @@ function copyTitle(title, btn) {
   }
 }
 /* ── STAT CARD FILTER HELPERS ── */
+
+/* ── HINDI DUB FILTER ── */
+function toggleHindiW(btn) {
+  window._wHindi = !window._wHindi;
+  btn.classList.toggle('on', window._wHindi);
+  renderWatch();
+}
+function toggleHindiD(btn) {
+  window._dHindi = !window._dHindi;
+  btn.classList.toggle('on', window._dHindi);
+  renderDisc();
+}
+
 function wWorth() {
   wSort = 'score';
   window._wFilter = 'worth';

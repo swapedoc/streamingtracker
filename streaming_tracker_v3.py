@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS discover_content (
     category TEXT NOT NULL,
     genre TEXT,
     popularity FLOAT,
+    stream_url TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(tmdb_id, platform)
 );
@@ -519,16 +520,39 @@ class DiscoverFlow:
         import asyncio as aio
 
         # ── Phase 1: fetch all /discover pages ────────────────────────────
-        page_sem = aio.Semaphore(20)   # slightly more aggressive — TMDb handles it fine
-        connector = aiohttp.TCPConnector(ssl=False, limit=60)
+        page_sem = aio.Semaphore(8)
+        connector = aiohttp.TCPConnector(ssl=False, limit=20)
+
+        done_count = 0
+        total_jobs = len(jobs)
+
+        async def _fetch_with_progress(session, job, semaphore):
+            nonlocal done_count
+            try:
+                result = await aio.wait_for(
+                    self._fetch_page(session, job, semaphore),
+                    timeout=20
+                )
+            except aio.TimeoutError:
+                print(f"   ⏱️  Timeout: {job.get('category','?')} page {job.get('page','?')}")
+                result = []
+            except Exception as e:
+                result = []
+            done_count += 1
+            if done_count % 10 == 0 or done_count == total_jobs:
+                print(f"   📄 Pages: {done_count}/{total_jobs} done...")
+            return result
+
         async with aiohttp.ClientSession(connector=connector) as session:
-            page_tasks = [self._fetch_page(session, job, page_sem) for job in jobs]
+            page_tasks = [_fetch_with_progress(session, job, page_sem) for job in jobs]
             page_results = await aio.gather(*page_tasks, return_exceptions=True)
 
             raw_items: List[Dict] = []
             for r in page_results:
                 if isinstance(r, list):
                     raw_items.extend(r)
+
+            print(f"   ✅ Pages done — {len(raw_items)} raw items collected")
 
             # Deduplicate per (tmdb_id, category) before provider checks
             seen_keys: set = set()
@@ -540,16 +564,16 @@ class DiscoverFlow:
                     unique_items.append(item)
 
             # ── Phase 2: provider checks — all async, same session ─────────
-            # TMDb /discover already filtered by with_watch_providers so almost
-            # every item will pass — we just need to know *which* platforms.
-            # Group by tmdb_id to avoid duplicate provider fetches across categories.
             tmdb_id_to_items: Dict[int, List[Dict]] = {}
             for item in unique_items:
                 tmdb_id_to_items.setdefault(item['tmdb_id'], []).append(item)
 
-            provider_sem = aio.Semaphore(40)   # 40 concurrent provider requests
+            provider_sem = aio.Semaphore(40)
+            prov_done = 0
+            total_prov = len(tmdb_id_to_items)
 
             async def fetch_providers(tmdb_id: int, content_type: str) -> tuple:
+                nonlocal prov_done
                 url = (f"https://api.themoviedb.org/3/{content_type}"
                        f"/{tmdb_id}/watch/providers")
                 params = {'api_key': self.api_key}
@@ -557,31 +581,35 @@ class DiscoverFlow:
                     try:
                         async with provider_sem:
                             async with session.get(url, params=params, timeout=10) as resp:
-                                if resp.status == 429:          # rate-limited
+                                if resp.status == 429:
                                     await aio.sleep(2 ** attempt)
                                     continue
                                 if resp.status != 200:
+                                    prov_done += 1
                                     return tmdb_id, []
                                 data = await resp.json()
                                 india = data.get('results', {}).get('IN', {})
                                 ids = [p['provider_id']
                                        for p in india.get('flatrate', [])]
+                                prov_done += 1
+                                if prov_done % 50 == 0 or prov_done == total_prov:
+                                    print(f"   🔍 Providers: {prov_done}/{total_prov}...")
                                 return tmdb_id, ids
                     except Exception:
                         if attempt < 2:
                             await aio.sleep(0.5 * (attempt + 1))
+                prov_done += 1
                 return tmdb_id, []
 
-            # One provider fetch per unique tmdb_id (not per category copy)
             unique_tmdb = list(tmdb_id_to_items.items())
-            total = len(unique_tmdb)
-            print(f"\n🔍 Checking providers for {total} unique titles (async, 40 concurrent)...")
+            print(f"\n   🔍 Checking providers for {total_prov} unique titles...")
 
             provider_tasks = [
                 fetch_providers(tid, items[0]['content_type'])
                 for tid, items in unique_tmdb
             ]
             provider_results = await aio.gather(*provider_tasks, return_exceptions=True)
+            print(f"   ✅ Providers done")
 
             # Build provider map: tmdb_id -> [platform_name, ...]
             provider_map: Dict[int, List[str]] = {}
@@ -607,18 +635,7 @@ class DiscoverFlow:
         jobs = self._build_jobs()
         print(f"   🚀 Firing {len(jobs)} TMDb page requests concurrently...")
 
-        def _run(coro):
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        return pool.submit(asyncio.run, coro).result()
-                return loop.run_until_complete(coro)
-            except RuntimeError:
-                return asyncio.run(coro)
-
-        expanded = _run(self._fetch_all_async(jobs))
+        expanded = asyncio.run(self._fetch_all_async(jobs))
 
         # Count by category for logging
         from collections import Counter
@@ -2529,7 +2546,7 @@ class AsyncWatchNowPipeline:
         return s
 
     async def _process_youtube(self, content_id: int, title: str,
-                                platform: str, is_hindi: bool, loop) -> List[dict]:
+                                platform: str, is_hindi: bool) -> List[dict]:
         """Returns list of review rows — caller does the bulk upsert.
         Checks DB cache first to avoid burning quota on already-seen titles.
         Sentiment uses VADER (instant, no network) for title+description texts.
@@ -2582,7 +2599,7 @@ class AsyncWatchNowPipeline:
     # ── TMDb reviews — parallel sentiment ────────────────────────────────
 
     async def _process_tmdb_reviews(self, content_id: int, tmdb_id: int,
-                                     media_type: str, loop) -> List[dict]:
+                                     media_type: str) -> List[dict]:
         data = await self._aget(
             f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/reviews",
             {'api_key': self.tmdb_key, 'language': 'en-US', 'page': 1},
@@ -2693,7 +2710,7 @@ class AsyncWatchNowPipeline:
     # ── Per-title orchestration ───────────────────────────────────────────
 
     async def _process_title(self, title_data: dict, platform: str,
-                              semaphore, loop) -> None:
+                              semaphore) -> None:
         async with semaphore:
             title      = title_data['title']
             tmdb_id    = title_data['tmdb_id']
@@ -2722,11 +2739,11 @@ class AsyncWatchNowPipeline:
 
             # All four sources fire simultaneously
             yt_rows, tmdb_rows, reddit_rows, critic_rows = await asyncio.gather(
-                self._process_youtube(content_id, title, platform, is_hindi, loop),
-                self._process_tmdb_reviews(content_id, tmdb_id, media_type, loop),
-                loop.run_in_executor(self._executor, self._reddit_sync,
+                self._process_youtube(content_id, title, platform, is_hindi),
+                self._process_tmdb_reviews(content_id, tmdb_id, media_type),
+                asyncio.get_running_loop().run_in_executor(self._executor, self._reddit_sync,
                                      content_id, title, media_type, is_hindi),
-                loop.run_in_executor(self._executor, self._critics_sync,
+                asyncio.get_running_loop().run_in_executor(self._executor, self._critics_sync,
                                      content_id, title, media_type, year, is_hindi),
                 return_exceptions=True
             )
@@ -2737,13 +2754,13 @@ class AsyncWatchNowPipeline:
                 if isinstance(batch, list):
                     all_rows.extend(batch)
 
-            await loop.run_in_executor(self._executor, self._bulk_save_reviews, all_rows)
+            await asyncio.get_running_loop().run_in_executor(self._executor, self._bulk_save_reviews, all_rows)
             print(f"   ✅ {title[:40]} — {len(all_rows)} reviews saved")
 
     # ── Main async entry point ────────────────────────────────────────────
 
     async def _run_async(self) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         import aiohttp
         connector = aiohttp.TCPConnector(ssl=False, limit=50)
         async with aiohttp.ClientSession(connector=connector) as session:
@@ -2761,9 +2778,9 @@ class AsyncWatchNowPipeline:
                 return self.tmdb.get_trending_indian('tv', limit=10)
 
             results = await asyncio.gather(
-                loop.run_in_executor(self._executor, _fetch_global),
-                loop.run_in_executor(self._executor, _fetch_hindi_movie),
-                loop.run_in_executor(self._executor, _fetch_hindi_tv),
+                asyncio.get_running_loop().run_in_executor(self._executor, _fetch_global),
+                asyncio.get_running_loop().run_in_executor(self._executor, _fetch_hindi_movie),
+                asyncio.get_running_loop().run_in_executor(self._executor, _fetch_hindi_tv),
                 return_exceptions=True
             )
             trending_all = results[0] if isinstance(results[0], list) else []
@@ -2810,7 +2827,7 @@ class AsyncWatchNowPipeline:
                     key = (t['tmdb_id'], platform)
                     if key not in seen_title_platform:
                         seen_title_platform.add(key)
-                        tasks.append(self._process_title(t, platform, semaphore, loop))
+                        tasks.append(self._process_title(t, platform, semaphore))
 
             print(f"\n   🚀 {len(tasks)} jobs, {self.SEMAPHORE} concurrent — go!")
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -2821,10 +2838,6 @@ class AsyncWatchNowPipeline:
         print("="*70)
         try:
             asyncio.run(self._run_async())
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._run_async())
         finally:
             self._executor.shutdown(wait=False)
         print("\n" + "="*70)
@@ -2887,6 +2900,165 @@ def cleanup_old_movies(db=None):
         print(f"   ✅ Removed {len(old_ids)} old movies from Watch Now")
     except Exception as e:
         print(f"   ⚡️ Old movie cleanup failed: {e}")
+
+# ============================================================================
+# JUSTWATCH FETCHER — Direct platform streaming URLs via JustWatch GraphQL API
+# Confirmed working 2026-02-24. Queries apis.justwatch.com/graphql (no key).
+# Returns real netflix.com/title/... and app.primevideo.com/detail?gti=... URLs.
+# ============================================================================
+
+class JustWatchFetcher:
+
+    GQL = "https://apis.justwatch.com/graphql"
+
+    # Confirmed shortNames from live API probe
+    PLATFORM_MAP = {
+        'nfx': 'Netflix',
+        'prv': 'Prime Video',
+        'jhs': 'Jiohotstar',   # confirmed live
+        'dnp': 'Jiohotstar',   # legacy
+        'hot': 'Jiohotstar',   # legacy
+        'jio': 'JioCinema',
+        'atp': 'Apple TV+',
+    }
+
+    SEARCH_Q = """
+    query GetSearchTitles($searchQuery: String!, $country: Country!, $first: Int!) {
+      popularTitles(country: $country, filter: { searchQuery: $searchQuery }, first: $first) {
+        edges { node { id __typename } }
+      }
+    }
+    """
+
+    OFFERS_Q = """
+    query GetTitleOffers($nodeId: ID!, $country: Country!) {
+      node(id: $nodeId) {
+        ... on Movie { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
+        ... on Show  { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
+      }
+    }
+    """
+
+    def __init__(self):
+        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent':   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Content-Type': 'application/json',
+            'Origin':       'https://www.justwatch.com',
+            'Referer':      'https://www.justwatch.com/',
+        })
+
+    def _gql(self, query, variables):
+        try:
+            r = self.session.post(self.GQL, json={'query': query, 'variables': variables}, timeout=12)
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            if 'errors' in data:
+                return None
+            return data
+        except Exception:
+            return None
+
+    def _find_stream_url(self, title, media_type, platform):
+        """
+        Search JustWatch for title, then check offers on each candidate node
+        until we find one that has the target platform. This avoids picking
+        the wrong movie when multiple results share the same type (e.g. Pushpa 1
+        and Pushpa 2 both return as Movie — we need the one on Netflix specifically).
+        """
+        data = self._gql(self.SEARCH_Q, {'searchQuery': title, 'country': 'IN', 'first': 8})
+        if not data:
+            return None
+
+        edges = data.get('data', {}).get('popularTitles', {}).get('edges', [])
+        want = 'Movie' if media_type != 'tv' else 'Show'
+
+        # Check candidates of the right type first, then fall back to any type
+        candidates = [e['node']['id'] for e in edges if e['node'].get('__typename') == want]
+        fallback   = [e['node']['id'] for e in edges if e['node'].get('__typename') != want]
+
+        for node_id in candidates + fallback:
+            url = self._get_stream_url(node_id, platform)
+            if url:
+                return url
+            time.sleep(0.2)   # polite between offer checks
+
+        return None
+
+    def _get_stream_url(self, node_id, platform):
+        data = self._gql(self.OFFERS_Q, {'nodeId': node_id, 'country': 'IN'})
+        if not data:
+            return None
+        offers = (data.get('data', {}).get('node') or {}).get('offers', [])
+        seen = set()
+        for offer in offers:
+            short = offer.get('package', {}).get('shortName', '')
+            plat  = self.PLATFORM_MAP.get(short)
+            url   = offer.get('standardWebURL', '')
+            if plat == platform and url and plat not in seen:
+                return url
+            seen.add(plat)
+        return None
+
+    def _fetch_and_update(self, rows, table_name):
+        """Shared logic: fetch JustWatch URLs for a list of rows and update the given table."""
+        updated = 0
+        for item in rows:
+            title      = item['title']
+            media_type = item['content_type']
+            platform   = item['platform']
+
+            url = self._find_stream_url(title, media_type, platform)
+            if not url:
+                print(f"   ⚡️ {title[:40]} — not found on JustWatch")
+                time.sleep(0.3)
+                continue
+
+            try:
+                self.db.table(table_name).update({'stream_url': url}).eq('id', item['id']).execute()
+                print(f"   ✅ {title[:38]:<38} → {url[:56]}")
+                updated += 1
+            except Exception as e:
+                print(f"   ❌ DB: {str(e)[:60]}")
+
+            time.sleep(0.4)
+
+        return updated
+
+    def run(self):
+        print("\n" + "="*70)
+        print("🔗 FETCHING DIRECT STREAMING LINKS — Watch Now (JustWatch)")
+        print("="*70)
+
+        rows = self.db.table('content').select('id, title, content_type, platform').execute()
+        if not rows.data:
+            print("⚡️ No Watch Now content found")
+            return
+
+        updated = self._fetch_and_update(rows.data, 'content')
+        print(f"\n✅ {updated}/{len(rows.data)} Watch Now titles got direct stream links")
+
+    def run_discover(self):
+        print("\n" + "="*70)
+        print("🔗 FETCHING DIRECT STREAMING LINKS — Discover (JustWatch)")
+        print("="*70)
+
+        rows = self.db.table('discover_content').select('id, title, content_type, platform, stream_url').execute()
+        if not rows.data:
+            print("⚡️ No Discover content found")
+            return
+
+        # Skip rows that already have a stream_url to avoid redundant API calls
+        rows_needing_url = [r for r in rows.data if not r.get('stream_url')]
+        skipped = len(rows.data) - len(rows_needing_url)
+        if skipped:
+            print(f"   ⏭️  Skipping {skipped} titles that already have stream URLs")
+
+        updated = self._fetch_and_update(rows_needing_url, 'discover_content')
+        print(f"\n✅ {updated}/{len(rows_needing_url)} Discover titles got direct stream links")
+
 
 # ============================================================================
 # MAIN - RUN BOTH FLOWS
@@ -2968,13 +3140,33 @@ def main():
     
     computer = ScoreComputer()
     computer.compute_all()
-    
+
+    jw = JustWatchFetcher()
+    jw.run()           # Watch Now — fetches links for 'content' table
+    jw.run_discover()  # Discover — fetches links for 'discover_content' table
+
+    # ── Auto-fetch Hindi dubs for any new/untagged titles ─────────────────
+    print("\n" + "="*70)
+    print("🎙 HINDI DUB CHECK — tagging new titles...")
+    print("="*70)
+    try:
+        from fetch_hindi_dubs import process_table
+        db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        for table in ['content', 'discover_content']:
+            print(f"\n  Checking {table}...")
+            rows = db.table(table).select('id, title, content_type, hindi_dub').execute()
+            if rows.data:
+                f, nf, e, s = process_table(db, table, rows.data)
+                print(f"  ✅ Found: {f}  ✗ None: {nf}  ⏭ Skipped: {s}  ⚠️ Errors: {e}")
+    except Exception as e:
+        print(f"  ⚠️  Hindi dub check failed (non-fatal): {e}")
+
     print("\n" + "="*70)
     print("🎉 BOTH FLOWS COMPLETE!")
     print("="*70)
     print("\n📊 Summary:")
-    print("   ✅ Discover content saved (no reviews)")
-    print("   ✅ Watch Now content scored (with reviews)")
+    print("   ✅ Discover content saved (with stream URLs)")
+    print("   ✅ Watch Now content scored (with reviews + stream URLs)")
     print("\nNext: streamlit run dashboard_v3.py")
 
 if __name__ == "__main__":
