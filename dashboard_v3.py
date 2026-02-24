@@ -2112,9 +2112,9 @@ function openPanel(d, clickedEl) {
           const key = Object.keys(cfg).find(k => u.includes(k)) || '';
           const c = cfg[key] || {bg:'#E8C547', fg:'#07070A'};
           return `
-            <button class="tv-send-btn" onclick="sendToLGTV('${u}', '${d.title.replace(/'/g, "\\'")}', '${d.platform}')">
-              <span class="tv-icon">📺</span>
-              Send to LG TV
+            <button class="tv-send-btn" onclick="copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
+              <span class="tv-icon">📋</span>
+              Copy Title
             </button>
             <a class="panel-watch-btn" href="${u}" target="_blank"
                style="background:${c.bg};color:${c.fg}">&#9654; Watch on ${d.platform}</a>`;
@@ -2214,8 +2214,8 @@ function renderDisc() {
   </a>
   <div style="padding:6px 12px 10px;border-top:1px solid var(--v3);display:flex;flex-direction:column;gap:8px">
     ${d.stream_url
-      ? `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();sendToLGTV('${d.stream_url}', '${d.title.replace(/'/g, "\\'")}', '${d.platform}')">
-           <span class="tv-icon">📺</span> Send to TV
+      ? `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
+           <span class="tv-icon">📋</span> Copy Title
          </button>
          <a href="${d.stream_url}" target="_blank" class="jw-link" style="color:${platCol}">&#9654; Watch on ${d.platform}</a>`
       : `<a href="${jwUrl}" target="_blank" class="jw-link">&#9654; Find on JustWatch</a>`
@@ -2274,79 +2274,26 @@ function showToast(icon, message, duration = 3000) {
   }, duration);
 }
 
-/* ── APP IDs for webOS native launch ── */
-const WEBOS_IDS = {
-  netflix:    'netflix',
-  primevideo: 'amazon.primevideo',
-  hotstar:    'hotstar',
-  jiocinema:  'jiocinema',
-  youtube:    'youtube.leanback.v4',
-  apple:      'com.apple.appletv',
-};
-
-/* ── DEEP LINK: https → app scheme for mobile ── */
-function getDeepLink(url) {
-  if (!url) return url;
-  if (url.includes('netflix.com'))    return url.replace('https://', 'nflx://');
-  if (url.includes('primevideo.com')) return url.replace('https://', 'aiv://');
-  if (url.includes('hotstar.com'))    return url.replace('https://www.hotstar.com','hotstar://').replace('https://hotstar.com','hotstar://');
-  if (url.includes('jiocinema.com'))  return url.replace('https://www.jiocinema.com','jiocinema://').replace('https://jiocinema.com','jiocinema://');
-  if (url.includes('tv.apple.com'))   return url.replace('https://', 'videos://');
-  if (url.includes('youtube.com/watch')) { try { const v = new URL(url).searchParams.get('v'); if(v) return 'youtube://www.youtube.com/watch?v='+v; } catch(e){} }
-  return url;
-}
-
-const isWebOS  = /Web0S|webOS/i.test(navigator.userAgent) || typeof window.webOS !== 'undefined';
-const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-
-function sendToLGTV(streamUrl, title, platform) {
-  const btn = event.target.closest('.tv-send-btn');
-  if (!btn) return;
-  const originalHTML = btn.innerHTML;
-
-  const done = (label, delay) => {
-    btn.innerHTML = label;
-    setTimeout(() => { btn.classList.remove('sending'); btn.innerHTML = originalHTML; }, delay);
-  };
-
-  btn.classList.add('sending');
-  btn.innerHTML = '<span class="tv-icon">⏳</span> Opening...';
-
-  /* ── LG webOS browser: launch app via webOS API from window.top ── */
-  if (isWebOS) {
-    const key = Object.keys(WEBOS_IDS).find(k => (platform||'').toLowerCase().includes(k) || (streamUrl||'').includes(k));
-    const appId = WEBOS_IDS[key];
-    showToast('📺', 'Launching on TV...');
-    // postMessage to ALL sibling iframes (loading screen bridge will catch it)
-    var msg = { type: 'webos_launch', appId: appId, url: streamUrl, title: title };
-    // broadcast to all iframes in the parent page
-    try {
-      var frames = window.top.document.querySelectorAll('iframe');
-      frames.forEach(function(f) { try { f.contentWindow.postMessage(msg, '*'); } catch(e){} });
-    } catch(e) {}
-    // also try direct webOS call in case we're somehow at top level
-    if (typeof webOS !== 'undefined' && webOS.service) {
-      webOS.service.request('luna://com.webos.applicationManager', {
-        method: 'launch',
-        parameters: { id: appId },
-        onSuccess: function() {},
-        onFailure: function() {}
-      });
-    }
-    done('<span class="tv-icon">✓</span> Launched!', 3000);
-
-  /* ── iPhone / Android: deep link opens the app ── */
-  } else if (isMobile) {
-    showToast('📱', 'Opening ' + title + '...');
-    window.top.location.href = getDeepLink(streamUrl);
-    done('<span class="tv-icon">✓</span> Done!', 2000);
-
-  /* ── Desktop: new tab ── */
-  } else {
-    window.open(streamUrl, '_blank');
-    showToast('🎬', 'Opened in new tab', 2000);
-    done('<span class="tv-icon">✓</span> Opened!', 2000);
-  }
+function copyTitle(title, btn) {
+  // Copy to clipboard
+  navigator.clipboard.writeText(title).then(function() {
+    var orig = btn.innerHTML;
+    btn.innerHTML = '<span class="tv-icon">✓</span> Copied!';
+    showToast('📋', '"' + title + '" copied — search on TV remote', 3000);
+    setTimeout(function() { btn.innerHTML = orig; }, 2000);
+  }).catch(function() {
+    // fallback for browsers without clipboard API
+    var ta = document.createElement('textarea');
+    ta.value = title;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    var orig = btn.innerHTML;
+    btn.innerHTML = '<span class="tv-icon">✓</span> Copied!';
+    showToast('📋', '"' + title + '" copied — search on TV remote', 3000);
+    setTimeout(function() { btn.innerHTML = orig; }, 2000);
+  });
 }
 </script>
 </body>
