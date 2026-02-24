@@ -2098,9 +2098,9 @@ function openPanel(d, clickedEl) {
           return `
             <button class="tv-send-btn" onclick="sendToLGTV('${u}', '${d.title.replace(/'/g, "\\'")}', '${d.platform}')">
               <span class="tv-icon">📺</span>
-              Send to LG TV
+              Watch on TV
             </button>
-            <a class="panel-watch-btn" href="${u}" target="_blank"
+            <a class="panel-watch-btn" href="${getDeepLink(u)}" target="_blank"
                style="background:${c.bg};color:${c.fg}">&#9654; Watch on ${d.platform}</a>`;
         })() : ''}
         ${tmdb ? `<a class="panel-link" href="${tmdb}" target="_blank">View on TMDb →</a>` : ''}
@@ -2201,7 +2201,7 @@ function renderDisc() {
       ? `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();sendToLGTV('${d.stream_url}', '${d.title.replace(/'/g, "\\'")}', '${d.platform}')">
            <span class="tv-icon">📺</span> Send to TV
          </button>
-         <a href="${d.stream_url}" target="_blank" class="jw-link" style="color:${platCol}">&#9654; Watch on ${d.platform}</a>`
+         <a href="${getDeepLink(d.stream_url)}" target="_blank" class="jw-link" style="color:${platCol}">&#9654; Watch on ${d.platform}</a>`
       : `<a href="${jwUrl}" target="_blank" class="jw-link">&#9654; Find on JustWatch</a>`
     }
   </div>
@@ -2258,33 +2258,129 @@ function showToast(icon, message, duration = 3000) {
   }, duration);
 }
 
+
+/* ── DEEP LINK: converts https URLs to iOS/Android app deep links ── */
+function getDeepLink(url) {
+  if (!url) return url;
+  // Extract content ID from URL where possible
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  if (!isMobile) return url; // desktop: just use web URL
+
+  // Netflix: https://www.netflix.com/title/12345 → nflx://www.netflix.com/title/12345
+  if (url.includes('netflix.com')) {
+    return url.replace('https://', 'nflx://');
+  }
+  // Prime Video: → aiv:// or intent
+  if (url.includes('primevideo.com') || url.includes('amazon.com/video')) {
+    return url.replace('https://', 'aiv://');
+  }
+  // Hotstar / Disney+
+  if (url.includes('hotstar.com')) {
+    return url.replace('https://www.hotstar.com', 'hotstar://').replace('https://hotstar.com', 'hotstar://');
+  }
+  // JioCinema
+  if (url.includes('jiocinema.com')) {
+    return url.replace('https://www.jiocinema.com', 'jiocinema://').replace('https://jiocinema.com', 'jiocinema://');
+  }
+  // Apple TV+
+  if (url.includes('tv.apple.com')) {
+    return url.replace('https://', 'videos://');
+  }
+  // YouTube
+  if (url.includes('youtube.com/watch')) {
+    const vid = new URL(url).searchParams.get('v');
+    if (vid) return `youtube://www.youtube.com/watch?v=${vid}`;
+  }
+  return url; // fallback to web URL
+}
+
+/* ── WEBOS APP IDs ── */
+const WEBOS_APP_IDS = {
+  netflix:    'netflix',
+  primevideo: 'amazon.primevideo',
+  hotstar:    'hotstar',
+  jiocinema:  'jiocinema',
+  youtube:    'youtube.leanback.v4',
+  apple:      'com.apple.appletv',
+};
+
+/* ── DETECT WEBOS ── */
+const isWebOS = /Web0S|webOS/i.test(navigator.userAgent) || typeof window.webOS !== 'undefined';
+const isSmartTV = isWebOS || /SmartTV|Tizen|SMART-TV|HbbTV|NetCast|BRAVIA|Viera|Roku|AppleTV|googletv|Android TV/i.test(navigator.userAgent);
+const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+/* ── UPDATE BUTTON LABEL BASED ON DEVICE ── */
+document.addEventListener('DOMContentLoaded', function() {
+  if (!isWebOS) {
+    // On phone: rename all "Watch on TV" buttons to "Open on Phone"
+    document.querySelectorAll('.tv-send-btn').forEach(btn => {
+      if (btn.innerHTML.includes('Watch on TV')) {
+        btn.innerHTML = '<span class="tv-icon">📱</span> Open on Phone';
+      }
+    });
+  }
+});
+
 function sendToLGTV(streamUrl, title, platform) {
   const btn = event.target.closest('.tv-send-btn');
   if (!btn) return;
-  
   const originalHTML = btn.innerHTML;
-  
-  // Show loading state
+
+  const platformKey = Object.keys(WEBOS_APP_IDS).find(k => 
+    (platform || '').toLowerCase().includes(k) || (streamUrl || '').includes(k)
+  );
+  const appId = WEBOS_APP_IDS[platformKey] || null;
+
   btn.classList.add('sending');
-  btn.innerHTML = '<span class="tv-icon">⏳</span> Sending...';
-  showToast('📺', 'Opening on LG C4...');
-  
-  // Simulate sending (in real implementation, this would use webOS protocol)
-  setTimeout(() => {
-    // Open the streaming URL
-    // On LG webOS browser, this will trigger app opening
-    window.open(streamUrl, '_blank');
-    
-    // Success state
-    btn.innerHTML = '<span class="tv-icon">✓</span> Playing on TV';
-    showToast('🎬', `Now playing: ${title}`, 4000);
-    
-    // Reset button after 3 seconds
+
+  /* ── WEBOS BROWSER: launch app natively ── */
+  if (isSmartTV && isWebOS && appId) {
+    btn.innerHTML = '<span class="tv-icon">⏳</span> Launching...';
+    showToast('📺', 'Opening ' + title + ' on TV...');
+
+    const req = webOS.service.request('luna://com.webos.applicationManager', {
+      method: 'launch',
+      parameters: { id: appId },
+      onSuccess: function() {
+        btn.innerHTML = '<span class="tv-icon">✓</span> Launched!';
+        showToast('🎬', 'Now playing: ' + title, 4000);
+        setTimeout(() => { btn.classList.remove('sending'); btn.innerHTML = originalHTML; }, 3000);
+      },
+      onFailure: function(err) {
+        // fallback to deep link in webOS browser
+        window.location.href = getDeepLink(streamUrl);
+        btn.innerHTML = '<span class="tv-icon">✓</span> Opening...';
+        setTimeout(() => { btn.classList.remove('sending'); btn.innerHTML = originalHTML; }, 3000);
+      }
+    });
+
+  /* ── NON-WEBOS SMART TV: use direct URL, most smart TV browsers handle deep links ── */
+  } else if (isSmartTV) {
+    btn.innerHTML = '<span class="tv-icon">⏳</span> Launching...';
+    showToast('📺', 'Opening ' + title + '...');
+    window.location.href = getDeepLink(streamUrl);
+    setTimeout(() => { btn.classList.remove('sending'); btn.innerHTML = originalHTML; }, 2500);
+
+  /* ── IPHONE / MOBILE: open deep link to launch app ── */
+  } else if (isMobile) {
+    btn.innerHTML = '<span class="tv-icon">⏳</span> Opening...';
+    showToast('📱', 'Opening ' + title + '...');
+    const deep = getDeepLink(streamUrl);
+    window.location.href = deep;
+    // fallback: if app not installed, open web after 1.5s
     setTimeout(() => {
-      btn.classList.remove('sending');
-      btn.innerHTML = originalHTML;
-    }, 3000);
-  }, 1000);
+      btn.innerHTML = '<span class="tv-icon">✓</span> Done!';
+      showToast('🎬', 'Opened: ' + title, 3000);
+      setTimeout(() => { btn.classList.remove('sending'); btn.innerHTML = originalHTML; }, 2500);
+    }, 1500);
+
+  /* ── DESKTOP BROWSER: just open in new tab ── */
+  } else {
+    btn.innerHTML = '<span class="tv-icon">⏳</span> Opening...';
+    window.open(streamUrl, '_blank');
+    btn.innerHTML = '<span class="tv-icon">✓</span> Opened!';
+    setTimeout(() => { btn.classList.remove('sending'); btn.innerHTML = originalHTML; }, 2500);
+  }
 }
 </script>
 </body>
