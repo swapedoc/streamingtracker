@@ -631,16 +631,19 @@ body:has(.dc:hover) #cursor-ring {
   background: rgba(0,0,0,0); backdrop-filter: blur(0px);
   pointer-events: none;
   transition: background 0.5s, backdrop-filter 0.5s;
+  visibility: hidden;
 }
 #overlay.on {
   background: rgba(0,0,0,0.82); backdrop-filter: blur(10px);
   pointer-events: all;
+  visibility: visible;
 }
 
 #panel {
   position: absolute; top: 0; right: 0;
   width: min(620px, 100vw); height: 100%;
   min-height: 100%;
+  visibility: hidden;
   background: var(--v1);
   border-left: 1px solid var(--v3);
   z-index: 101;
@@ -650,7 +653,7 @@ body:has(.dc:hover) #cursor-ring {
   display: flex; flex-direction: column;
   overflow-anchor: none;
 }
-#panel.on { transform: translateX(0); }
+#panel.on { transform: translateX(0); visibility: visible; }
 #panel::-webkit-scrollbar { width: 2px; }
 #panel::-webkit-scrollbar-thumb { background: var(--v4); }
 
@@ -971,6 +974,23 @@ body:has(.dc:hover) #cursor-ring {
   .panel-title { font-size: 1.6rem; }
   .panel-big-score { font-size: 5rem; }
   .panel-body { padding: 0 20px 40px; }
+
+  /* close button - big and obvious on mobile */
+  .panel-topbar {
+    padding: 16px 20px;
+    background: var(--v1);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+  .panel-close-btn {
+    font-size: 0.7rem;
+    padding: 10px 20px;
+    color: var(--t-bright) !important;
+    border-color: var(--t-dim) !important;
+    background: var(--v3) !important;
+  }
+  .panel-frame-id { font-size: 0.45rem; }
 }
 </style>
 </head>
