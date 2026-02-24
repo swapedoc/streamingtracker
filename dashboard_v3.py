@@ -1926,7 +1926,7 @@ function getFW() {
   if (window._worthFilter) base = base.filter(d => d.score >= 60);
   if (window._polarFilter) base = base.filter(d => d.polarizing);
   return base
-    .filter(d => wPlat===''all' || d.platform===wPlat)
+    .filter(d => wPlat==='all' || d.platform===wPlat)
     .filter(d => wType==='all'  || d.type===wType)
     .filter(d => !wSearch || d.title.toLowerCase().includes(wSearch.toLowerCase()))
     .sort((a,b) => {
