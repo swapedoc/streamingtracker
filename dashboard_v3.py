@@ -586,26 +586,6 @@ div[data-testid="stStatusWidget"] {
     setTimeout(() => clearInterval(interval), 4000);
 })();
 </script>
-
-<script>
-// ── webOS BRIDGE: stays alive after loading screen fades ──
-// Listens for launch requests from the main app iframe
-window.addEventListener('message', function(e) {
-  if (!e.data || e.data.type !== 'webos_launch') return;
-  var appId = e.data.appId;
-  var url   = e.data.url;
-  if (typeof webOS !== 'undefined' && webOS.service) {
-    webOS.service.request('luna://com.webos.applicationManager', {
-      method: 'launch',
-      parameters: { id: appId },
-      onSuccess: function() { console.log('[bridge] launched', appId); },
-      onFailure: function() { window.top.location.href = url; }
-    });
-  } else {
-    window.top.location.href = url;
-  }
-});
-</script>
 """
 
 components.html(loading_screen, height=1)
@@ -959,8 +939,6 @@ body:has(.dc:hover) #cursor-ring {
   overflow: hidden;
   margin-bottom: 36px;
 }
-.srib-tap:hover { background:rgba(255,255,255,0.05)!important; transform:translateY(-2px); transition:all 0.2s ease; }
-.srib-tap:active { transform:scale(0.97); }
 .srib {
   background: var(--v1);
   padding: 22px 28px;
@@ -1570,9 +1548,7 @@ body:has(.dc:hover) #cursor-ring {
 
   /* stats ribbon - 2 columns on mobile */
   .stats-ribbon { grid-template-columns: repeat(3, 1fr); }
-  .srib-tap:hover { background:rgba(255,255,255,0.05)!important; transform:translateY(-2px); transition:all 0.2s ease; }
-.srib-tap:active { transform:scale(0.97); }
-.srib { padding: 14px 12px; }
+  .srib { padding: 14px 12px; }
   .srib-n { font-size: 1.8rem; }
   .srib::after { display: none; }
 
@@ -1923,8 +1899,8 @@ document.addEventListener('mousemove', e => {
 /* ── FILTER ── */
 function getFW() {
   let base = W;
-  if (window._worthFilter) base = base.filter(d => d.score >= 60);
-  if (window._polarFilter) base = base.filter(d => d.polarizing);
+  if (window._wFilter === 'worth') base = base.filter(d => d.score >= 60);
+  if (window._wFilter === 'polar') base = base.filter(d => d.polarizing);
   return base
     .filter(d => wPlat==='all' || d.platform===wPlat)
     .filter(d => wType==='all'  || d.type===wType)
@@ -1937,16 +1913,7 @@ function getFW() {
 }
 
 /* ── STATS RIBBON ── */
-function function wWorth() {
-  window._worthFilter = true; window._polarFilter = false;
-  showTab('watch', document.querySelector('.tab')); renderWatch();
-}
-function wPolar() {
-  window._polarFilter = true; window._worthFilter = false;
-  showTab('watch', document.querySelector('.tab')); renderWatch();
-}
-
-renderStats(data, elId, isDisc) {
+function renderStats(data, elId, isDisc) {
   let items;
   if (!isDisc) {
     const avg   = data.length ? (data.reduce((s,d)=>s+(d.score||0),0)/data.length).toFixed(0) : 0;
@@ -1956,8 +1923,8 @@ renderStats(data, elId, isDisc) {
     items = [
       { n: data.length, l: 'Titles',        c: '#F5F5F0' },
       { n: avg,         l: 'Avg Score',      c: '#E8C547' },
-      { n: worth,       l: 'Worth Watching', c: '#8CB4CC', action: "wWorth()" },
-      { n: pol,         l: 'Polarising',     c: '#FF4455', action: "wPolar()" },
+      { n: worth,       l: 'Worth Watching', c: '#8CB4CC', fn: 'wWorth()' },
+      { n: pol,         l: 'Polarising',     c: '#FF4455', fn: 'wPolar()' },
       { n: revs,        l: 'Reviews',        c: '#7A7A90' },
     ];
     // update masthead KPIs
@@ -1971,18 +1938,17 @@ renderStats(data, elId, isDisc) {
     D.forEach(d => cats[d.category] = (cats[d.category]||0)+1);
     const genres = Object.keys(cats).filter(k=>k.startsWith('genre_')).reduce((s,k)=>s+(cats[k]||0),0);
     items = [
-      { n: data.length,         l: 'Titles',      c: '#F5F5F0', action: "sC('all',null)" },
-      { n: cats['classics']||0, l: 'Classics',    c: '#E8C547', action: "sC('classics',null)" },
-      { n: cats['underdog']||0, l: 'Hidden Gems', c: '#4DBFFF', action: "sC('underdog',null)" },
-      { n: cats['indian']||0,   l: 'Hindi',       c: '#FF7043', action: "sC('indian',null)" },
-      { n: genres,              l: 'Genre Picks', c: '#B88EFF', action: "sC('genre_picks',null)" },
+      { n: data.length,         l: 'Titles',      c: '#F5F5F0', fn: "sC('all',null)"       },
+      { n: cats['classics']||0, l: 'Classics',    c: '#E8C547', fn: "sC('classics',null)"  },
+      { n: cats['underdog']||0, l: 'Hidden Gems', c: '#4DBFFF', fn: "sC('underdog',null)"  },
+      { n: cats['indian']||0,   l: 'Hindi',       c: '#FF7043', fn: "sC('indian',null)"    },
+      { n: genres,              l: 'Genre Picks', c: '#B88EFF', fn: "sC('genre_picks',null)"},
     ];
   }
   document.getElementById(elId).innerHTML = items.map(s =>
-    `<div class="srib${s.action ? ' srib-tap' : ''}" data-n="${s.n}" style="--c:${s.c}${s.action ? ';cursor:pointer' : ''}"
-      ${s.action ? `onclick="${s.action}"` : ''}>
+    `<div class="srib" data-n="${s.n}" style="--c:${s.c}${s.fn ? ';cursor:pointer' : ''}" ${s.fn ? `onclick="${s.fn}"` : ''}>
       <div class="srib-n">${s.n}</div>
-      <div class="srib-l">${s.l}${s.action ? ' ↗' : ''}</div>
+      <div class="srib-l">${s.l}${s.fn ? ' ↗' : ''}</div>
     </div>`
   ).join('');
 }
@@ -2042,7 +2008,7 @@ function wIdxFor(d) {
 /* ── RENDER WATCH ── */
 function renderWatch() {
   const data = getFW();
-  renderStats(data, 'ws', false);
+  renderStats(W, 'ws', false);
   const el = document.getElementById('wg');
   if (!data.length) { el.innerHTML = '<div class="empty">No titles match your filters</div>'; return; }
   el.innerHTML = data.slice(0,80).map((d, i) => makeCard(d, i, wIdxFor(d))).join('');
@@ -2202,7 +2168,7 @@ function getFD() {
 
 function renderDisc() {
   const data = getFD();
-  renderStats(data, 'ds', true);
+  renderStats(D, 'ds', true);
   const el = document.getElementById('dg');
   if (!data.length) { el.innerHTML='<div class="empty">Nothing found</div>'; return; }
   el.innerHTML = data.slice(0,150).map((d,i) => {
@@ -2292,26 +2258,37 @@ function showToast(icon, message, duration = 3000) {
 }
 
 function copyTitle(title, btn) {
-  // Copy to clipboard
-  navigator.clipboard.writeText(title).then(function() {
-    var orig = btn.innerHTML;
+  var orig = btn.innerHTML;
+  var doIt = function() {
     btn.innerHTML = '<span class="tv-icon">✓</span> Copied!';
     showToast('📋', '"' + title + '" copied — search on TV remote', 3000);
     setTimeout(function() { btn.innerHTML = orig; }, 2000);
-  }).catch(function() {
-    // fallback for browsers without clipboard API
+  };
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(title).then(doIt).catch(function(){
+      var ta = document.createElement('textarea');
+      ta.value = title; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta); doIt();
+    });
+  } else {
     var ta = document.createElement('textarea');
-    ta.value = title;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    var orig = btn.innerHTML;
-    btn.innerHTML = '<span class="tv-icon">✓</span> Copied!';
-    showToast('📋', '"' + title + '" copied — search on TV remote', 3000);
-    setTimeout(function() { btn.innerHTML = orig; }, 2000);
-  });
+    ta.value = title; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta); doIt();
+  }
 }
+/* ── STAT CARD FILTER HELPERS ── */
+function wWorth() {
+  wSort = 'score';
+  window._wFilter = 'worth';
+  showTab('watch', document.querySelector('.tab'));
+  renderWatch();
+}
+function wPolar() {
+  window._wFilter = 'polar';
+  showTab('watch', document.querySelector('.tab'));
+  renderWatch();
+}
+
 </script>
 </body>
 </html>"""
