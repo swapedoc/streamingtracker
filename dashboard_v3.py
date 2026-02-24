@@ -110,11 +110,11 @@ HTML = r"""<!DOCTYPE html>
   --gold-d: #A8852A;
   --gold-g: rgba(232,197,71,0.06);
 
-  /* text scale */
+  /* text scale — bumped up for readability */
   --t-bright: #F5F5F0;
-  --t-mid:    #9090A0;
-  --t-dim:    #50505E;
-  --t-void:   #2A2A35;
+  --t-mid:    #B0B0C0;
+  --t-dim:    #707080;
+  --t-void:   #505060;
 
   /* platform colours */
   --c-nf: #E50914;
@@ -306,7 +306,7 @@ body:has(.dc:hover) #cursor-ring {
 .tab {
   font-family: var(--sans); font-size: 0.7rem; font-weight: 700;
   letter-spacing: 0.2em; text-transform: uppercase;
-  color: var(--t-void); background: none; border: none;
+  color: var(--t-dim); background: none; border: none;
   padding: 14px 32px 12px; position: relative;
   transition: color 0.25s;
 }
@@ -369,15 +369,7 @@ body:has(.dc:hover) #cursor-ring {
   background: var(--c, transparent);
   opacity: 0.6;
 }
-.srib::after {
-  content: attr(data-n);
-  position: absolute; right: -8px; top: -12px;
-  font-family: var(--serif); font-style: italic;
-  font-size: 5rem; line-height: 1; font-weight: 400;
-  color: var(--c, var(--v2));
-  opacity: 0.06; pointer-events: none;
-  letter-spacing: -0.04em;
-}
+.srib::after { display: none; }
 .srib-n {
   font-family: var(--serif); font-style: italic;
   font-size: 2.8rem; line-height: 1; font-weight: 400;
@@ -389,7 +381,7 @@ body:has(.dc:hover) #cursor-ring {
 .srib-l {
   font-family: var(--mono); font-size: 0.52rem;
   letter-spacing: 0.2em; text-transform: uppercase;
-  color: var(--t-void);
+  color: var(--t-dim);
 }
 
 /* ═══════════════════════════════════════════════════
@@ -403,18 +395,18 @@ body:has(.dc:hover) #cursor-ring {
 .pill {
   font-family: var(--mono); font-size: 0.56rem;
   letter-spacing: 0.14em; text-transform: uppercase;
-  color: var(--t-void); background: transparent;
-  border: 1px solid var(--v3); border-radius: 1px;
+  color: var(--t-mid); background: transparent;
+  border: 1px solid var(--v4); border-radius: 1px;
   padding: 6px 14px;
   transition: all 0.18s; white-space: nowrap;
 }
-.pill:hover { color: var(--t-mid); border-color: var(--v4); }
+.pill:hover { color: var(--t-bright); border-color: var(--t-dim); }
 .pill.on {
   color: var(--v0); background: var(--gold);
   border-color: var(--gold);
   box-shadow: 0 0 16px rgba(232,197,71,0.3);
 }
-.ctrl-sep { width: 1px; height: 16px; background: var(--v3); margin: 0 6px; }
+.ctrl-sep { width: 1px; height: 20px; background: var(--t-dim); margin: 0 10px; opacity: 0.5; }
 
 .search-wrap { margin-left: auto; position: relative; }
 .search-icon {
@@ -596,13 +588,13 @@ body:has(.dc:hover) #cursor-ring {
 .card-plat {
   font-family: var(--mono); font-size: 0.5rem;
   letter-spacing: 0.12em; text-transform: uppercase;
-  color: var(--pl, var(--t-void));
-  border-bottom: 1px solid var(--pl, var(--t-void));
-  padding-bottom: 1px; opacity: 0.9;
+  color: var(--pl, var(--t-mid));
+  border-bottom: 1px solid var(--pl, var(--t-mid));
+  padding-bottom: 1px;
 }
 .card-type {
   font-family: var(--mono); font-size: 0.5rem;
-  color: var(--t-void); letter-spacing: 0.06em;
+  color: var(--t-dim); letter-spacing: 0.06em;
 }
 
 /* score bar — thin golden line */
@@ -620,7 +612,7 @@ body:has(.dc:hover) #cursor-ring {
 .card-verdict {
   font-family: var(--body); font-style: italic;
   font-size: 0.65rem; line-height: 1;
-  color: var(--sc, var(--t-void));
+  color: var(--sc, var(--t-dim));
 }
 
 /* ═══════════════════════════════════════════════════
@@ -734,9 +726,9 @@ body:has(.dc:hover) #cursor-ring {
 .pm-item {
   font-family: var(--mono); font-size: 0.58rem;
   letter-spacing: 0.12em; text-transform: uppercase;
-  color: var(--t-void);
+  color: var(--t-dim);
 }
-.pm-item span { color: var(--t-mid); display: block; margin-top: 3px; }
+.pm-item span { color: var(--t-bright); display: block; margin-top: 3px; }
 
 /* big score section */
 .panel-score-section {
@@ -1048,7 +1040,7 @@ body:has(.dc:hover) #cursor-ring {
     <button class="pill" data-p="Apple TV+"         onclick="sP('Apple TV+',this)">Apple TV+</button>
     <button class="pill" data-p="JioCinema"         onclick="sP('JioCinema',this)">JioCinema</button>
     <div class="ctrl-sep"></div>
-    <button class="pill on" data-t="all"   onclick="sT('all',this)">All</button>
+    <button class="pill on" data-t="all"   onclick="sT('all',this)">All Types</button>
     <button class="pill" data-t="movie"    onclick="sT('movie',this)">Films</button>
     <button class="pill" data-t="tv"       onclick="sT('tv',this)">Series</button>
     <div class="search-wrap">
