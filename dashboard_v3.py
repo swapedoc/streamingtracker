@@ -2128,13 +2128,19 @@ function openPanel(d, clickedEl) {
           };
           const key = Object.keys(cfg).find(k => u.includes(k)) || '';
           const c = cfg[key] || {bg:'#E8C547', fg:'#07070A'};
+          // Netflix: use netflix:// scheme directly in href so Chrome iOS can open the app
+          // Custom schemes only work from direct <a> taps, not JS window.location
+          var watchHref = u;
+          if (u.includes('netflix.com')) {
+            var nm = u.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
+            if (nm) watchHref = 'netflix://www.netflix.com/title/' + nm[1];
+          }
           return `
             <button class="tv-send-btn" onclick="copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
               <span class="tv-icon">📋</span>
               Copy Title
             </button>
-            <a class="panel-watch-btn" href="${u}" target="_blank"
-               onclick="tryDeepLink(event,u,d.platform)"
+            <a class="panel-watch-btn" href="${watchHref}" target="_blank"
                style="background:${c.bg};color:${c.fg}">&#9654; Watch on ${d.platform}</a>`;
         })() : ''}
         ${tmdb ? `<a class="panel-link" href="${tmdb}" target="_blank">View on TMDb →</a>` : ''}
@@ -2238,10 +2244,17 @@ function renderDisc() {
   </a>
   <div style="padding:6px 12px 10px;border-top:1px solid var(--v3);display:flex;flex-direction:column;gap:8px">
     ${d.stream_url
-      ? `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
+      ? (() => {
+          var dHref = d.stream_url;
+          if (d.stream_url.includes('netflix.com')) {
+            var dm = d.stream_url.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
+            if (dm) dHref = 'netflix://www.netflix.com/title/' + dm[1];
+          }
+          return `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
            <span class="tv-icon">📋</span> Copy Title
          </button>
-         <a href="${d.stream_url}" target="_blank" class="jw-link" style="color:${platCol}" onclick="tryDeepLink(event,d.stream_url,d.platform)">&#9654; Watch on ${d.platform}</a>`
+         <a href="${dHref}" target="_blank" class="jw-link" style="color:${platCol}">&#9654; Watch on ${d.platform}</a>`;
+        })()
       : `<a href="${jwUrl}" target="_blank" class="jw-link">&#9654; Find on JustWatch</a>`
     }
   </div>
@@ -2342,47 +2355,6 @@ function wPolar() {
   window._wFilter = 'polar';
   showTab('watch', document.querySelector('.tab'));
   renderWatch();
-}
-
-/* ── DEEP LINK: open streaming links in app on mobile ──
-   All platforms use Universal Links (iOS) / App Links (Android)
-   which means window.location.href on the web URL opens the app.
-   EXCEPTION: Netflix on Android has disabled App Links intentionally
-   and requires the nflx:// custom scheme to force-open the app.
-   window.open() must NEVER be used — iOS always routes it to Safari.
-── */
-function tryDeepLink(e, url, platform) {
-  var isIOS     = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-  var isAndroid = /Android/i.test(navigator.userAgent);
-  if (!isIOS && !isAndroid) return; // desktop: let default href work
-
-  e.preventDefault();
-
-  var appUrl = url; // default: web URL works for all platforms on iOS
-                    // and for Prime/Hotstar/Apple/JioCinema on Android
-
-  if (isAndroid && url.includes('netflix.com')) {
-    // Netflix disabled Android App Links — must use nflx:// scheme
-    // JustWatch India returns /in/title/ID — regex handles all locale prefixes
-    var m = url.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
-    if (m) {
-      appUrl = 'nflx://www.netflix.com/title/' + m[1];
-      // Try scheme; if Netflix not installed fall back to browser after 1.5s
-      var fallback = setTimeout(function() { window.open(url, '_blank'); }, 1500);
-      window.addEventListener('blur', function onBlur() {
-        clearTimeout(fallback);
-        window.removeEventListener('blur', onBlur);
-      }, { once: true });
-      window.location.href = appUrl;
-      return;
-    }
-    // No ID found — just open web URL, OS will try App Link anyway
-  }
-
-  // iOS (all platforms) + Android (non-Netflix):
-  // window.location.href lets OS intercept and open the app.
-  // If app not installed, browser opens the URL normally. No fallback needed.
-  window.location.href = appUrl;
 }
 
 /* ── KEEP-ALIVE: prevent Streamlit sleep when tab is open ── */
