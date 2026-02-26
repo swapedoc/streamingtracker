@@ -2344,26 +2344,44 @@ function wPolar() {
   renderWatch();
 }
 
-/* ── DEEP LINK: try app first on mobile, fall back to browser ── */
+/* ── DEEP LINK: open streaming links in app on mobile ──
+   All platforms use Universal Links (iOS) / App Links (Android)
+   which means window.location.href on the web URL opens the app.
+   EXCEPTION: Netflix on Android has disabled App Links intentionally
+   and requires the nflx:// custom scheme to force-open the app.
+   window.open() must NEVER be used — iOS always routes it to Safari.
+── */
 function tryDeepLink(e, url, platform) {
-  var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-  if (!isMobile) return; // desktop: let normal href work
+  var isIOS     = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  var isAndroid = /Android/i.test(navigator.userAgent);
+  if (!isIOS && !isAndroid) return; // desktop: let default href work
+
   e.preventDefault();
-  var appUrl = url;
-  if (url.includes('netflix.com')) {
-    var m = url.match(/netflix\.com\/(?:title|watch)\/(\d+)/);
-    appUrl = m ? 'nflx://www.netflix.com/title/' + m[1] : 'nflx://www.netflix.com/';
-  } else if (url.includes('primevideo.com')) {
-    appUrl = url.replace('https://www.primevideo.com', 'aiv://aiv');
-  } else if (url.includes('hotstar.com') || url.includes('jiohotstar.com')) {
-    appUrl = url.replace(/https:\/\/(www\.)?(?:jio)?hotstar\.com/, 'hotstar://');
+
+  var appUrl = url; // default: web URL works for all platforms on iOS
+                    // and for Prime/Hotstar/Apple/JioCinema on Android
+
+  if (isAndroid && url.includes('netflix.com')) {
+    // Netflix disabled Android App Links — must use nflx:// scheme
+    // JustWatch India returns /in/title/ID — regex handles all locale prefixes
+    var m = url.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
+    if (m) {
+      appUrl = 'nflx://www.netflix.com/title/' + m[1];
+      // Try scheme; if Netflix not installed fall back to browser after 1.5s
+      var fallback = setTimeout(function() { window.open(url, '_blank'); }, 1500);
+      window.addEventListener('blur', function onBlur() {
+        clearTimeout(fallback);
+        window.removeEventListener('blur', onBlur);
+      }, { once: true });
+      window.location.href = appUrl;
+      return;
+    }
+    // No ID found — just open web URL, OS will try App Link anyway
   }
-  // Open app; if not installed, fall back to browser after 1.5s
-  var fallback = setTimeout(function() { window.open(url, '_blank'); }, 1500);
-  window.addEventListener('blur', function onBlur() {
-    clearTimeout(fallback);
-    window.removeEventListener('blur', onBlur);
-  }, { once: true });
+
+  // iOS (all platforms) + Android (non-Netflix):
+  // window.location.href lets OS intercept and open the app.
+  // If app not installed, browser opens the URL normally. No fallback needed.
   window.location.href = appUrl;
 }
 
@@ -2371,7 +2389,7 @@ function tryDeepLink(e, url, platform) {
 (function keepAlive() {
   setInterval(function() {
     fetch(window.location.href, { method: 'HEAD', cache: 'no-store' }).catch(function(){});
-  }, 10 * 60 * 1000); // every 10 minutes
+  }, 10 * 60 * 1000);
 })();
 
 </script>
