@@ -2134,7 +2134,8 @@ function openPanel(d, clickedEl) {
               Copy Title
             </button>
             <a class="panel-watch-btn" href="${u}" target="_blank"
-               onclick="tryDeepLink(event,this)" style="background:${c.bg};color:${c.fg}">&#9654; Watch on ${d.platform}</a>`;
+               onclick="tryDeepLink(event,u,d.platform)"
+               style="background:${c.bg};color:${c.fg}">&#9654; Watch on ${d.platform}</a>`;
         })() : ''}
         ${tmdb ? `<a class="panel-link" href="${tmdb}" target="_blank">View on TMDb →</a>` : ''}
       </div>
@@ -2240,7 +2241,7 @@ function renderDisc() {
       ? `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
            <span class="tv-icon">📋</span> Copy Title
          </button>
-         <a href="${d.stream_url}" target="_blank" class="jw-link" style="color:${platCol}" onclick="tryDeepLink(event,this)">&#9654; Watch on ${d.platform}</a>`
+         <a href="${d.stream_url}" target="_blank" class="jw-link" style="color:${platCol}" onclick="tryDeepLink(event,d.stream_url,d.platform)">&#9654; Watch on ${d.platform}</a>`
       : `<a href="${jwUrl}" target="_blank" class="jw-link">&#9654; Find on JustWatch</a>`
     }
   </div>
@@ -2343,39 +2344,34 @@ function wPolar() {
   renderWatch();
 }
 
-/* ── DEEP LINK: open in app on mobile, browser fallback ── */
-function tryDeepLink(e, href, platform) {
-  if (!href) return;
+/* ── DEEP LINK: try app first on mobile, fall back to browser ── */
+function tryDeepLink(e, url, platform) {
   var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-  if (!isMobile) return; // desktop: let default href work normally
+  if (!isMobile) return; // desktop: let normal href work
   e.preventDefault();
-  var appUrl = href;
-  if (href.includes('netflix.com')) {
-    // Extract Netflix title ID and use nflx:// scheme
-    var m = href.match(/netflix\.com\/(?:title|watch)\/([\d]+)/);
-    if (m) appUrl = 'nflx://www.netflix.com/title/' + m[1];
-    else appUrl = 'nflx://www.netflix.com/';
-  } else if (href.includes('primevideo.com')) {
-    appUrl = href.replace('https://www.primevideo.com', 'aiv://aiv');
-  } else if (href.includes('hotstar.com') || href.includes('jiohotstar.com')) {
-    appUrl = href.replace(/https:\/\/(www\.)?jiohotstar\.com/, 'hotstar://').replace(/https:\/\/(www\.)?hotstar\.com/, 'hotstar://');
+  var appUrl = url;
+  if (url.includes('netflix.com')) {
+    var m = url.match(/netflix\.com\/(?:title|watch)\/(\d+)/);
+    appUrl = m ? 'nflx://www.netflix.com/title/' + m[1] : 'nflx://www.netflix.com/';
+  } else if (url.includes('primevideo.com')) {
+    appUrl = url.replace('https://www.primevideo.com', 'aiv://aiv');
+  } else if (url.includes('hotstar.com') || url.includes('jiohotstar.com')) {
+    appUrl = url.replace(/https:\/\/(www\.)?(?:jio)?hotstar\.com/, 'hotstar://');
   }
-  // Try app scheme, fall back to browser after 1.5s
-  var fallbackTimer = setTimeout(function() {
-    window.open(href, '_blank');
-  }, 1500);
+  // Open app; if not installed, fall back to browser after 1.5s
+  var fallback = setTimeout(function() { window.open(url, '_blank'); }, 1500);
   window.addEventListener('blur', function onBlur() {
-    clearTimeout(fallbackTimer);
+    clearTimeout(fallback);
     window.removeEventListener('blur', onBlur);
-  });
+  }, { once: true });
   window.location.href = appUrl;
 }
 
-/* ── KEEP-ALIVE: ping every 10 min to prevent Streamlit sleep ── */
+/* ── KEEP-ALIVE: prevent Streamlit sleep when tab is open ── */
 (function keepAlive() {
   setInterval(function() {
     fetch(window.location.href, { method: 'HEAD', cache: 'no-store' }).catch(function(){});
-  }, 10 * 60 * 1000);
+  }, 10 * 60 * 1000); // every 10 minutes
 })();
 
 </script>
