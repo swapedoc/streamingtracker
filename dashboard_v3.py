@@ -2128,12 +2128,11 @@ function openPanel(d, clickedEl) {
           };
           const key = Object.keys(cfg).find(k => u.includes(k)) || '';
           const c = cfg[key] || {bg:'#E8C547', fg:'#07070A'};
-          // Netflix: use netflix:// scheme directly in href so Chrome iOS can open the app
-          // Custom schemes only work from direct <a> taps, not JS window.location
+          // Netflix: use netflix://title/ID — the app doesn't recognise www.netflix.com as a host
           var watchHref = u;
           if (u.includes('netflix.com')) {
             var nm = u.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
-            if (nm) watchHref = 'netflix://www.netflix.com/title/' + nm[1];
+            if (nm) watchHref = 'netflix://title/' + nm[1];
           }
           return `
             <button class="tv-send-btn" onclick="copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
@@ -2248,7 +2247,7 @@ function renderDisc() {
           var dHref = d.stream_url;
           if (d.stream_url.includes('netflix.com')) {
             var dm = d.stream_url.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
-            if (dm) dHref = 'netflix://www.netflix.com/title/' + dm[1];
+            if (dm) dHref = 'netflix://title/' + dm[1];
           }
           return `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
            <span class="tv-icon">📋</span> Copy Title
