@@ -9,12 +9,6 @@ SETUP:
 USAGE:
   python3 fetch_hindi_dubs.py
 
-WHAT IT DOES:
-  1. Pulls all titles from your Supabase content + discover_content tables
-  2. Searches each title on JustWatch India via GraphQL
-  3. Checks if any offer has 'hi' in audioLanguages
-  4. Updates 'hindi_dub' column in Supabase (true/false)
-
 SUPABASE SETUP (run once in Supabase SQL editor):
   ALTER TABLE content          ADD COLUMN IF NOT EXISTS hindi_dub BOOLEAN DEFAULT FALSE;
   ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS hindi_dub BOOLEAN DEFAULT FALSE;
@@ -35,14 +29,21 @@ SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 GQL          = 'https://apis.justwatch.com/graphql'
 
-MAX_WORKERS = 25  # bumped up — JustWatch handles this fine
+MAX_WORKERS = 25
 
 # ── GraphQL Queries ──────────────────────────────────────────────────────────
 
 SEARCH_Q = """
 query SearchTitles($searchQuery: String!, $country: Country!, $first: Int!) {
   popularTitles(country: $country, filter: { searchQuery: $searchQuery }, first: $first) {
-    edges { node { id __typename } }
+    edges {
+      node {
+        id
+        __typename
+        ... on Movie { content(country: $country, language: "en") { title originalTitle } }
+        ... on Show  { content(country: $country, language: "en") { title originalTitle } }
+      }
+    }
   }
 }
 """
@@ -99,9 +100,6 @@ def gql(query, variables):
 # ── Live progress bar ────────────────────────────────────────────────────────
 
 class LiveProgress:
-    """
-    Scrolling log of completed titles with a sticky progress bar at the bottom.
-    """
     def __init__(self, total):
         self.total     = total
         self.completed = 0
@@ -141,7 +139,6 @@ class LiveProgress:
         sys.stdout.flush()
 
     def log(self, msg):
-        """Print a result line above the sticky progress bar."""
         with self._lock:
             sys.stdout.write(f'\r{" " * 110}\r')
             print(msg)
@@ -159,14 +156,29 @@ class LiveProgress:
         sys.stdout.flush()
 
 
-# ── Core logic ───────────────────────────────────────────────────────────────
+import re
 
-def has_hindi_dub(title, content_type):
-    """
-    Search JustWatch India for a title, check candidate nodes for Hindi audio.
-    Returns True / False / None (API error).
-    """
-    data = gql(SEARCH_Q, {'searchQuery': title, 'country': 'IN', 'first': 8})
+def _normalize(s: str) -> str:
+    s = s.lower().strip()
+    s = re.sub(r"[^\w\s]", "", s)
+    s = re.sub(r"\b(the|a|an)\b", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+def _titles_match(search: str, result: str, original: str = '') -> bool:
+    needle = _normalize(search)
+    for candidate in filter(None, [_normalize(result), _normalize(original)]):
+        if needle == candidate:
+            return True
+        # Allow substring match only for longer titles (avoids "Kill" matching "Kill Bill")
+        if len(needle) >= 6 and (needle in candidate or candidate in needle):
+            return True
+    return False
+
+
+
+
+def has_hindi_dub(title: str, content_type: str):
+    data = gql(SEARCH_Q, {'searchQuery': title, 'country': 'IN', 'first': 5})
     if not data:
         return None
 
@@ -174,32 +186,33 @@ def has_hindi_dub(title, content_type):
     if not edges:
         return False
 
-    want       = 'Movie' if content_type != 'tv' else 'Show'
-    candidates = [e['node']['id'] for e in edges if e['node'].get('__typename') == want]
-    fallback   = [e['node']['id'] for e in edges if e['node'].get('__typename') != want]
+    want = 'Movie' if content_type != 'tv' else 'Show'
 
-    for node_id in (candidates + fallback)[:5]:
-        offer_data = gql(OFFERS_Q, {'nodeId': node_id, 'country': 'IN'})
-        if not offer_data:
-            time.sleep(0.1)
+    # Find the top result of the correct type whose title actually matches
+    top_match = None
+    for e in edges:
+        node = e['node']
+        if node.get('__typename') != want:
             continue
-        offers = (offer_data.get('data', {}).get('node') or {}).get('offers', [])
-        for offer in offers:
-            if 'hi' in (offer.get('audioLanguages') or []):
-                return True
-        time.sleep(0.1)
+        content = node.get('content') or {}
+        if _titles_match(title, content.get('title', ''), content.get('originalTitle', '')):
+            top_match = node['id']
+            break
 
-    return False
+    if not top_match:
+        return False
+
+    offer_data = gql(OFFERS_Q, {'nodeId': top_match, 'country': 'IN'})
+    if not offer_data:
+        return None
+
+    offers = (offer_data.get('data', {}).get('node') or {}).get('offers', [])
+    return any('hi' in (offer.get('audioLanguages') or []) for offer in offers)
 
 
 # ── Concurrent table processor ───────────────────────────────────────────────
 
 def process_table(db, table_name, rows, max_workers=MAX_WORKERS):
-    """
-    Process rows concurrently with a live progress bar.
-    Skips rows where hindi_dub is already True.
-    Safe to import and call from streaming_tracker_v3.py.
-    """
     to_process = [r for r in rows if r.get('hindi_dub') is not True]
     skipped    = len(rows) - len(to_process)
     found = not_found = errors = 0
@@ -262,10 +275,6 @@ def main():
     print('\n' + '='*65)
     print('🎬 HINDI DUB FETCHER — JustWatch India')
     print('='*65)
-    print()
-    print('⚠️  FIRST TIME SETUP: Run these once in Supabase SQL editor:')
-    print('   ALTER TABLE content          ADD COLUMN IF NOT EXISTS hindi_dub BOOLEAN DEFAULT FALSE;')
-    print('   ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS hindi_dub BOOLEAN DEFAULT FALSE;')
     print()
 
     # ── Watch Now ─────────────────────────────────────────────────────────────
