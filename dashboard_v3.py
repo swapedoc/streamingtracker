@@ -2128,11 +2128,21 @@ function openPanel(d, clickedEl) {
           };
           const key = Object.keys(cfg).find(k => u.includes(k)) || '';
           const c = cfg[key] || {bg:'#E8C547', fg:'#07070A'};
-          // Netflix: use netflix://title/ID — the app doesn't recognise www.netflix.com as a host
+          // Netflix: use nflx:// scheme — works in Safari on iOS.
+          // Chrome/Brave on iOS block custom schemes from webpages (Netflix's intentional lockdown).
+          // For those browsers we fall back to web URL + show a toast hint.
           var watchHref = u;
+          var isChromeiOS = /CriOS/i.test(navigator.userAgent);
+          var isBraveiOS  = /Brave/i.test(navigator.userAgent);
           if (u.includes('netflix.com')) {
             var nm = u.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
-            if (nm) watchHref = 'netflix://title/' + nm[1];
+            if (nm) {
+              if (!isChromeiOS && !isBraveiOS) {
+                watchHref = 'nflx://www.netflix.com/title/' + nm[1]; // Safari: opens app
+              } else {
+                watchHref = u; // Chrome/Brave: open web, show hint via onclick
+              }
+            }
           }
           return `
             <button class="tv-send-btn" onclick="copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
@@ -2140,6 +2150,7 @@ function openPanel(d, clickedEl) {
               Copy Title
             </button>
             <a class="panel-watch-btn" href="${watchHref}" target="_blank"
+               ${u.includes('netflix.com') && (isChromeiOS||isBraveiOS) ? 'onclick="showToast(\'📱\',\'Chrome blocks Netflix deep links — open in Safari to launch the app directly\',5000);return true;"' : ''}
                style="background:${c.bg};color:${c.fg}">&#9654; Watch on ${d.platform}</a>`;
         })() : ''}
         ${tmdb ? `<a class="panel-link" href="${tmdb}" target="_blank">View on TMDb →</a>` : ''}
@@ -2247,7 +2258,13 @@ function renderDisc() {
           var dHref = d.stream_url;
           if (d.stream_url.includes('netflix.com')) {
             var dm = d.stream_url.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
-            if (dm) dHref = 'netflix://title/' + dm[1];
+            if (dm) {
+              var isChromeiOS2 = /CriOS/i.test(navigator.userAgent);
+              var isBraveiOS2  = /Brave/i.test(navigator.userAgent);
+              dHref = (!isChromeiOS2 && !isBraveiOS2)
+                ? 'nflx://www.netflix.com/title/' + dm[1]
+                : d.stream_url;
+            }
           }
           return `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
            <span class="tv-icon">📋</span> Copy Title
