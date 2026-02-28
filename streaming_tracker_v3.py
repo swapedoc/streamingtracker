@@ -50,6 +50,17 @@ ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS trailer_id       TEXT;
 -- ── Vibe Score columns (run once) ────────────────────────────────────────────
 ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_score FLOAT;   -- 1.0 to 10.0
 ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_label TEXT;    -- e.g. "Scare Factor", "Laugh Meter"
+
+-- ── Manual trailer overrides (run once) ──────────────────────────────────────
+-- Use when TMDb has no trailer for a title you know has one.
+-- Get tmdb_id from: themoviedb.org → search title → number in URL
+-- Get trailer_id from: youtube.com/watch?v=XXXXXXXXXX → the part after v=
+CREATE TABLE IF NOT EXISTS trailer_overrides (
+    tmdb_id    INTEGER PRIMARY KEY,
+    trailer_id TEXT NOT NULL,
+    note       TEXT,   -- optional: title name for your reference
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 """
 
 import os
@@ -3615,6 +3626,29 @@ def _enrich_discover_details():
         print("   ⏭  All Discover rows already enriched.")
         return
 
+    # ── Load manual trailer overrides ────────────────────────────────────────
+    overrides = {}
+    try:
+        ov_rows = db.table('trailer_overrides').select('tmdb_id, trailer_id').execute().data or []
+        overrides = {r['tmdb_id']: r['trailer_id'] for r in ov_rows}
+        if overrides:
+            print(f"   🎬 {len(overrides)} manual trailer override(s) loaded")
+    except Exception:
+        pass  # table may not exist yet — safe to skip
+
+    # Apply overrides immediately — no TMDb call needed for these
+    override_hits = [r for r in to_do if r['tmdb_id'] in overrides]
+    to_do         = [r for r in to_do if r['tmdb_id'] not in overrides]
+    for r in override_hits:
+        try:
+            db.table('discover_content').update(
+                {'trailer_id': overrides[r['tmdb_id']]}
+            ).eq('id', r['id']).execute()
+        except Exception:
+            pass
+    if override_hits:
+        print(f"   ✅ {len(override_hits)} title(s) trailer set from manual overrides")
+
     print(f"   🚀 {len(to_do)} rows need runtime/trailer — 20 concurrent workers")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed as _ac
@@ -3684,34 +3718,72 @@ def embed_new_discover():
         print("\n✅ Embeddings: all discover titles already embedded")
         return
 
-    print(f"\n🔮 Embedding {len(rows)} new discover title(s)...")
-
-    GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={gemini_key}"
+    BATCH_URL  = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents?key={gemini_key}"
+    BATCH_SIZE = 100    # Gemini max per batchEmbedContents call
+    MIN_WAIT   = 4.5    # seconds between calls (15 req/min free tier)
     success = errors = 0
 
-    for i, row in enumerate(rows):
+    def _build_text(row):
         parts = [f"Title: {row.get('title', '')}"]
-        if row.get('genre'):      parts.append(f"Genre: {row['genre']}")
-        if row.get('tv_genre'):   parts.append(f"Genre: {row['tv_genre']}")
+        if row.get('genre'):        parts.append(f"Genre: {row['genre']}")
+        if row.get('tv_genre'):     parts.append(f"Genre: {row['tv_genre']}")
         if row.get('content_type'): parts.append(f"Type: {'Series' if row['content_type'] == 'tv' else 'Film'}")
         if row.get('release_year'): parts.append(f"Year: {row['release_year']}")
-        if row.get('overview'):   parts.append(f"Synopsis: {str(row['overview'])[:500]}")
-        text = '. '.join(parts)
+        if row.get('overview'):     parts.append(f"Synopsis: {str(row['overview'])[:400]}")
+        return '. '.join(parts)
 
-        try:
-            r = _req.post(GEMINI_URL,
-                json={'model': 'models/gemini-embedding-001', 'content': {'parts': [{'text': text}]}},
-                timeout=15)
-            r.raise_for_status()
-            embedding = r.json()['embedding']['values']
-            db.table('discover_content').update({'embedding': embedding}).eq('id', row['id']).execute()
-            success += 1
-            print(f"   [{i+1}/{len(rows)}] ✅ {row.get('title','?')[:55]}")
-        except Exception as e:
-            errors += 1
-            print(f"   [{i+1}/{len(rows)}] ❌ {row.get('title','?')[:40]} — {e}")
+    batches = [rows[i:i+BATCH_SIZE] for i in range(0, len(rows), BATCH_SIZE)]
+    print(f"\n🔮 Embedding {len(rows)} title(s) in {len(batches)} batch call(s)...")
 
-        _time.sleep(0.25)  # ~4 req/s — well within Gemini free tier
+    last_call = 0.0
+    for bidx, batch in enumerate(batches):
+        texts = [_build_text(r) for r in batch]
+
+        wait = MIN_WAIT - (_time.time() - last_call)
+        if wait > 0:
+            _time.sleep(wait)
+        last_call = _time.time()
+
+        embeddings = None
+        for attempt in range(5):
+            try:
+                r = _req.post(BATCH_URL, json={
+                    'requests': [
+                        {'model': 'models/gemini-embedding-001',
+                         'content': {'parts': [{'text': t}]}}
+                        for t in texts
+                    ]
+                }, timeout=60)
+                if r.status_code == 429:
+                    wait_s = min(60, 10 * (attempt + 1))
+                    print(f"   ⏳ Rate limited — waiting {wait_s}s...")
+                    _time.sleep(wait_s)
+                    continue
+                r.raise_for_status()
+                raw = r.json().get('embeddings', [])
+                if len(raw) != len(batch):
+                    print(f"   ⚠️  Got {len(raw)} embeddings for {len(batch)} titles — skipping batch")
+                    break
+                embeddings = [e['values'] for e in raw]
+                break
+            except Exception as e:
+                print(f"   ❌ Batch {bidx+1} attempt {attempt+1} error: {e}")
+                _time.sleep(3)
+
+        if embeddings is None:
+            errors += len(batch)
+            print(f"   ❌ Batch {bidx+1}/{len(batches)} failed — {len(batch)} titles skipped")
+            continue
+
+        for row, emb in zip(batch, embeddings):
+            try:
+                db.table('discover_content').update({'embedding': emb}).eq('id', row['id']).execute()
+                success += 1
+            except Exception as e:
+                errors += 1
+                print(f"   ⚠️  DB save failed '{row.get('title','?')}': {e}")
+
+        print(f"   ✅ Batch {bidx+1}/{len(batches)} done — {len(batch)} embedded ({success} total so far)")
 
     print(f"   Embedded: {success}  Errors: {errors}")
 
