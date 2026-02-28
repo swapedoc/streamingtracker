@@ -1983,7 +1983,7 @@ function renderDiscPills() {
   let genrePills = '';
 
   if (dType === 'tv') {
-    // TV mode — only show genres that have actual content in D
+    // Series-only — TV genre pills, hide empties
     const discTvGenres = new Set(D.filter(d => d.tv_genre).map(d => d.tv_genre));
     genrePills = TV_GENRE_PILLS.filter(g => discTvGenres.has(g.label)).map(g =>
       `<button class="pill${dCat==='tv_genre:'+g.label?' on':''}"
@@ -1991,12 +1991,28 @@ function renderDiscPills() {
         data-c="tv_genre:${g.label}"
         onclick="sC('tv_genre:${g.label.replace(/'/g,"\\'")}',this)">${g.label}</button>`
     ).join('');
-  } else {
-    // Film or All mode — only show genres that have actual content in D
+  } else if (dType === 'movie') {
+    // Films-only — film genre pills, hide empties
     const discFilmGenres = new Set(D.filter(d => d.genre).map(d => d.genre));
     genrePills = FILM_GENRE_PILLS.filter(g => discFilmGenres.has(g.label)).map(g =>
       `<button class="pill${dCat===g.cat?' on':''}" data-c="${g.cat}" onclick="sC('${g.cat}',this)">${g.label}</button>`
     ).join('');
+  } else {
+    // All Types — show both film genres AND TV genres that have content
+    const discFilmGenres = new Set(D.filter(d => d.genre).map(d => d.genre));
+    const discTvGenres   = new Set(D.filter(d => d.tv_genre).map(d => d.tv_genre));
+    const filmPills = FILM_GENRE_PILLS.filter(g => discFilmGenres.has(g.label)).map(g =>
+      `<button class="pill${dCat===g.cat?' on':''}" data-c="${g.cat}" onclick="sC('${g.cat}',this)">${g.label}</button>`
+    ).join('');
+    const tvPills = TV_GENRE_PILLS.filter(g => discTvGenres.has(g.label)).map(g =>
+      `<button class="pill${dCat==='tv_genre:'+g.label?' on':''}"
+        style="${dCat==='tv_genre:'+g.label?'border-color:'+g.color+';color:'+g.color:''}"
+        data-c="tv_genre:${g.label}"
+        onclick="sC('tv_genre:${g.label.replace(/'/g,"\\'")}',this)">${g.label}</button>`
+    ).join('');
+    const dFilmLabel = filmPills ? '<span style="font-family:var(--mono);font-size:0.46rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Films</span>' : '';
+    const dTvLabel   = tvPills   ? '<span style="font-family:var(--mono);font-size:0.46rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Series</span>' : '';
+    genrePills = dFilmLabel + filmPills + (tvPills ? '<div class="ctrl-sep"></div>' + dTvLabel + tvPills : '');
   }
 
   container.innerHTML = basePills + genrePills;
@@ -2020,28 +2036,45 @@ function renderWatchGenrePills() {
 
   let pills = '';
 
+  const watchTvGenres   = new Set(W.filter(d => d.tv_genre).map(d => d.tv_genre));
+  const watchFilmGenres = new Set(W.filter(d => d.genre).map(d => d.genre));
+
+  function tvPillHtml(g) {
+    const isOn = wGenre === g.label;
+    const onStyle = isOn ? `border-color:${g.color};color:${g.color}` : '';
+    return `<button class="pill${isOn?' on':''}" data-g="${g.label}"
+      style="${onStyle}"
+      onclick="sG('${g.label.replace(/'/g,"\'")}',this)">${g.label}</button>`;
+  }
+  function filmPillHtml(g) {
+    const isOn = wGenre === g.val;
+    return `<button class="pill${isOn?' on':''}" data-g="${g.val}"
+      onclick="sG('${g.val}',this)">${g.label}</button>`;
+  }
+
   if (wType === 'tv') {
-    // Series mode — only show TV genres that have content in W
-    const watchTvGenres = new Set(W.filter(d => d.tv_genre).map(d => d.tv_genre));
+    // Series-only — TV genre pills, hide empties
     pills = [{ label: 'All Genres', val: 'all' }]
       .concat(TV_GENRE_PILLS.filter(g => watchTvGenres.has(g.label)))
-      .map(g => {
-        const isOn = wGenre === (g.val || g.label);
-        const val  = g.val || g.label;
-        const col  = g.color || '';
-        const onStyle = (isOn && col) ? `border-color:${col};color:${col}` : '';
-        return `<button class="pill${isOn?' on':''}" data-g="${val}"
-          style="${onStyle}"
-          onclick="sG('${val.replace(/'/g,"\'")}',this)">${g.label}</button>`;
-      }).join('');
+      .map(g => g.val === 'all' ? filmPillHtml(g) : tvPillHtml(g))
+      .join('');
+  } else if (wType === 'movie') {
+    // Films-only — film genre pills, hide empties
+    pills = WATCH_FILM_GENRES
+      .filter(g => g.val === 'all' || watchFilmGenres.has(g.val))
+      .map(filmPillHtml).join('');
   } else {
-    // Film / All mode — only show film genres that have content in W
-    const watchFilmGenres = new Set(W.filter(d => d.genre).map(d => d.genre));
-    pills = WATCH_FILM_GENRES.filter(g => g.val === 'all' || watchFilmGenres.has(g.val)).map(g => {
-      const isOn = wGenre === g.val;
-      return `<button class="pill${isOn?' on':''}" data-g="${g.val}"
-        onclick="sG('${g.val}',this)">${g.label}</button>`;
-    }).join('');
+    // All Types — show film genres first, then TV genres, separated
+    const allGenresBtn = filmPillHtml({ label: 'All Genres', val: 'all' });
+    const fPills = WATCH_FILM_GENRES
+      .filter(g => g.val !== 'all' && watchFilmGenres.has(g.val))
+      .map(filmPillHtml).join('');
+    const tPills = TV_GENRE_PILLS
+      .filter(g => watchTvGenres.has(g.label))
+      .map(tvPillHtml).join('');
+    const filmLabel = fPills ? '<span style="font-family:var(--mono);font-size:0.46rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Films</span>' : '';
+    const tvLabel   = tPills ? '<span style="font-family:var(--mono);font-size:0.46rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Series</span>' : '';
+    pills = allGenresBtn + '<div class="ctrl-sep"></div>' + filmLabel + fPills + (tPills ? '<div class="ctrl-sep"></div>' + tvLabel + tPills : '');
   }
 
   container.innerHTML = pills;
