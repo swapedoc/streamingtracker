@@ -46,6 +46,10 @@ ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS seasons          INTEGER;
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_count    INTEGER;
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_runtime  INTEGER;
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS trailer_id       TEXT;
+
+-- ── Vibe Score columns (run once) ────────────────────────────────────────────
+ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_score FLOAT;   -- 1.0 to 10.0
+ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_label TEXT;    -- e.g. "Scare Factor", "Laugh Meter"
 """
 
 import os
@@ -1142,6 +1146,97 @@ Where:
         
         confidence = min(1.0, abs(compound))
         return {'sentiment': sentiment, 'confidence': confidence}
+
+    # ── Vibe label map — genre → (metric name, emoji) ────────────────────
+    VIBE_LABELS = {
+        'Horror':   ('Scare Factor',  '🔪'),
+        'Thriller': ('Tension Meter', '⚡'),
+        'Action':   ('Adrenaline',    '💥'),
+        'Comedy':   ('Laugh Meter',   '😂'),
+        'Sci-Fi':   ('Mind-Bend',     '🌀'),
+        'Romance':  ('Heart Score',   '💕'),
+        'Drama':    ('Emotional Hit', '🎭'),
+    }
+    VIBE_DEFAULT = ('Vibe Score', '✨')
+
+    def vibe_label_for(self, genre: str) -> tuple:
+        """Return (metric_name, emoji) for a given genre."""
+        return self.VIBE_LABELS.get(genre or '', self.VIBE_DEFAULT)
+
+    def vibe_analyze(self, review_texts: list, genre: str) -> Optional[Dict]:
+        """
+        Analyse a list of review snippets and return a genre-specific vibe score 1-10.
+        Tries Groq first (fast, timeout=10s), falls back to Gemini.
+        Returns None on any failure — never blocks the main score save.
+
+        Returns: {'vibe_score': float, 'vibe_label': str} or None
+        """
+        if not review_texts:
+            return None
+
+        metric, _ = self.vibe_label_for(genre)
+        # Combine up to 8 reviews, capped at 3000 chars total
+        combined = '\n\n'.join(t[:400] for t in review_texts[:8])
+        combined = combined[:3000]
+
+        prompt = f"""You are a film critic analysing audience reviews.
+
+Genre: {genre or 'General'}
+Metric: {metric}
+
+Reviews:
+{combined}
+
+Based ONLY on what the reviews say, rate the "{metric}" of this title on a scale of 1 to 10.
+- 1 = Almost none / very weak
+- 5 = Moderate / average
+- 10 = Extreme / outstanding
+
+Return ONLY a JSON object, no extra text:
+{{"vibe_score": <number 1-10>, "reasoning": "<one sentence>"}}"""
+
+        import time as _t
+        import json as _json
+
+        # Try Groq first
+        if self.use_groq and self.groq_rate_limit_until <= _t.time():
+            try:
+                response = self.groq_client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                    max_tokens=80,
+                    timeout=10,
+                )
+                raw = response.choices[0].message.content.strip()
+                raw = raw.replace('```json', '').replace('```', '').strip()
+                result = _json.loads(raw)
+                score = float(result.get('vibe_score', 0))
+                if 1 <= score <= 10:
+                    return {'vibe_score': round(score, 1), 'vibe_label': metric}
+            except Exception as e:
+                if '429' in str(e) or 'rate' in str(e).lower():
+                    self.groq_rate_limit_until = _t.time() + 60
+                # Non-fatal — fall through to Gemini
+
+        # Try Gemini
+        if self.use_gemini:
+            try:
+                response = self.gemini_client.models.generate_content(
+                    model='gemini-2.0-flash-exp',
+                    contents=prompt,
+                )
+                raw = response.text.strip().replace('```json', '').replace('```', '').strip()
+                result = _json.loads(raw)
+                score = float(result.get('vibe_score', 0))
+                if 1 <= score <= 10:
+                    return {'vibe_score': round(score, 1), 'vibe_label': metric}
+            except Exception as e:
+                if '429' in str(e) or 'RESOURCE_EXHAUSTED' in str(e):
+                    self.use_gemini = False
+                # Non-fatal — return None
+
+        return None  # Both tiers failed — score row still saves fine without vibe
 
 # ============================================================================
 # REDDIT INGESTER
@@ -2538,9 +2633,10 @@ class YouTubeIngester:
 
 class ScoreComputer:
     def __init__(self):
-        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        self.scoring = ScoringEngine()
-        self.tmdb = TMDbResolver()  
+        self.db        = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        self.scoring   = ScoringEngine()
+        self.tmdb      = TMDbResolver()
+        self.sentiment = SentimentAnalyzer()   # for vibe_analyze
     
     def compute_all(self):
         print("\n" + "="*70)
@@ -2570,7 +2666,7 @@ class ScoreComputer:
         page = 0
         while True:
             batch = self.db.table('reviews').select(
-                'content_id,source,sentiment,confidence,weighted_sentiment'
+                'content_id,source,sentiment,confidence,weighted_sentiment,review_text'
             ).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1).execute()
             if not batch.data:
                 break
@@ -2629,25 +2725,40 @@ class ScoreComputer:
             imdb_val     = content.get('imdb_rating') or 0
             is_polarizing = (len(sentiments) >= 3 and np.std(sentiments) > 0.7 and imdb_val < 8.0)
             positive_ratio = sum(1 for r in reviews if r['sentiment'] == 1) / len(reviews)
-            label = self.scoring.get_label(final_score)
+            label    = self.scoring.get_label(final_score)
             category = self.scoring.get_category(content.get('release_year'))
 
-            print(f"   🏆 {content['title'][:35]:35} {final_score:.1f} {label}")
+            # ── Vibe score — genre-specific metric extracted from review text ──
+            genre        = content.get('genre') or ''
+            review_texts = [r['review_text'] for r in reviews if r.get('review_text')]
+            vibe         = self.sentiment.vibe_analyze(review_texts, genre)
+            vibe_score   = vibe['vibe_score'] if vibe else None
+            vibe_label   = vibe['vibe_label'] if vibe else None
 
-            score_batch.append({
-                'content_id':    content_id,
-                'youtube_score': round(yt_score, 1),
-                'reddit_score':  round(red_score, 1),
-                'imdb_score':    round(imdb_score, 1),
+            vibe_note = f" | {vibe_label}: {vibe_score}/10" if vibe else ''
+            print(f"   🏆 {content['title'][:35]:35} {final_score:.1f} {label}{vibe_note}")
+
+            score_row = {
+                'content_id':      content_id,
+                'youtube_score':   round(yt_score, 1),
+                'reddit_score':    round(red_score, 1),
+                'imdb_score':      round(imdb_score, 1),
                 'engagement_score': 0.0,
-                'final_score':   round(final_score, 1),
-                'label':         label,
-                'category':      category,
-                'review_count':  len(reviews),
-                'positive_ratio': round(positive_ratio, 2),
-                'is_polarizing': bool(is_polarizing),
-                'sentiment_std': round(np.std(sentiments), 2) if len(sentiments) > 1 else 0.0
-            })
+                'final_score':     round(final_score, 1),
+                'label':           label,
+                'category':        category,
+                'review_count':    len(reviews),
+                'positive_ratio':  round(positive_ratio, 2),
+                'is_polarizing':   bool(is_polarizing),
+                'sentiment_std':   round(np.std(sentiments), 2) if len(sentiments) > 1 else 0.0,
+            }
+            # Only write vibe columns when LLM succeeded — never overwrite a good
+            # score with None just because this run's API timed out
+            if vibe_score is not None:
+                score_row['vibe_score'] = vibe_score
+                score_row['vibe_label'] = vibe_label
+
+            score_batch.append(score_row)
 
         # Bulk upsert all scores in one call
         if score_batch:

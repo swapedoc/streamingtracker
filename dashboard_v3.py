@@ -2811,18 +2811,13 @@ function wPolar() {
 const SUPA_URL  = '__SUPA_URL__';
 const SUPA_ANON = '__SUPA_ANON__';
 
-// Each browser gets a stable UUID stored in localStorage
 function getBrowserId() {
   let bid = localStorage.getItem('streamiq_bid');
-  if (!bid) {
-    bid = 'bid_' + crypto.randomUUID();
-    localStorage.setItem('streamiq_bid', bid);
-  }
+  if (!bid) { bid = 'bid_' + crypto.randomUUID(); localStorage.setItem('streamiq_bid', bid); }
   return bid;
 }
 
-// In-memory cache of tracked titles for this session
-let _trackedTitles = null;   // Set of titles
+let _trackedTitles = null;
 let currentPanelData = null;
 
 async function _fetchTracked() {
@@ -2845,7 +2840,7 @@ async function getTracked() {
 }
 
 function _updateTrackBtn(title) {
-  const btn   = document.getElementById('pp-track-btn');
+  const btn = document.getElementById('pp-track-btn');
   const label = document.getElementById('pp-track-label');
   if (!btn || !label) return;
   getTracked().then(set => {
@@ -2855,67 +2850,161 @@ function _updateTrackBtn(title) {
   });
 }
 
+/* ── Telegram modal ── */
+
+function _injectTrackModal() {
+  if (document.getElementById('tg-modal')) return;
+  const el = document.createElement('div');
+  el.id = 'tg-modal';
+  el.innerHTML = `
+    <div id="tg-modal-box">
+      <div id="tg-modal-title">🔔 Set up your alert</div>
+      <div id="tg-modal-sub">We'll send you a Telegram message when <span id="tg-modal-movie"></span> is available to stream.</div>
+      <div id="tg-modal-steps">
+        <div class="tg-step">1. Open Telegram and message <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a></div>
+        <div class="tg-step">2. It replies with your numeric Chat ID (e.g. <code>123456789</code>)</div>
+        <div class="tg-step">3. Paste it below 👇</div>
+      </div>
+      <input id="tg-chat-input" type="text" placeholder="Your Telegram Chat ID" autocomplete="off" spellcheck="false"/>
+      <div id="tg-modal-btns">
+        <button id="tg-cancel-btn" onclick="_closeTrackModal()">Cancel</button>
+        <button id="tg-confirm-btn" onclick="_confirmTrack()">Track →</button>
+      </div>
+      <div id="tg-modal-err"></div>
+    </div>`;
+  document.body.appendChild(el);
+  el.addEventListener('click', e => { if (e.target === el) _closeTrackModal(); });
+  const s = document.createElement('style');
+  s.textContent = `
+    #tg-modal {
+      position:fixed;inset:0;z-index:99999;
+      background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);
+      display:flex;align-items:center;justify-content:center;
+    }
+    #tg-modal-box {
+      background:#0e0e12;border:1px solid rgba(232,197,71,0.3);
+      border-radius:8px;padding:28px 32px;width:360px;max-width:90vw;
+      font-family:var(--mono);
+    }
+    #tg-modal-title { color:#E8C547;font-size:0.9rem;letter-spacing:0.12em;margin-bottom:10px; }
+    #tg-modal-sub   { color:#aaa;font-size:0.72rem;line-height:1.6;margin-bottom:16px; }
+    #tg-modal-sub span { color:#fff; }
+    #tg-modal-steps { margin-bottom:18px; }
+    .tg-step { color:#888;font-size:0.68rem;line-height:1.8; }
+    .tg-step a { color:#E8C547;text-decoration:none; }
+    .tg-step a:hover { text-decoration:underline; }
+    .tg-step code { background:rgba(255,255,255,0.07);padding:1px 5px;border-radius:3px;color:#ccc; }
+    #tg-chat-input {
+      width:100%;box-sizing:border-box;
+      background:rgba(255,255,255,0.05);border:1px solid rgba(232,197,71,0.25);
+      border-radius:4px;color:#fff;font-family:var(--mono);font-size:0.8rem;
+      padding:10px 12px;outline:none;margin-bottom:14px;transition:border-color .2s;
+    }
+    #tg-chat-input:focus { border-color:#E8C547; }
+    #tg-modal-btns { display:flex;gap:10px; }
+    #tg-cancel-btn {
+      flex:1;padding:9px;background:transparent;
+      border:1px solid rgba(255,255,255,0.15);color:#888;
+      font-family:var(--mono);font-size:0.7rem;letter-spacing:0.1em;
+      text-transform:uppercase;cursor:pointer;border-radius:4px;transition:all .2s;
+    }
+    #tg-cancel-btn:hover { border-color:#aaa;color:#ccc; }
+    #tg-confirm-btn {
+      flex:2;padding:9px;background:#E8C547;border:none;color:#07070A;
+      font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.1em;
+      text-transform:uppercase;cursor:pointer;border-radius:4px;transition:all .2s;
+    }
+    #tg-confirm-btn:hover { background:#f0d060; }
+    #tg-confirm-btn:disabled { opacity:0.5;cursor:not-allowed; }
+    #tg-modal-err { color:#FF4455;font-size:0.68rem;min-height:16px;margin-top:6px; }
+  `;
+  document.head.appendChild(s);
+}
+
+function _openTrackModal(d) {
+  _injectTrackModal();
+  document.getElementById('tg-modal-movie').textContent = '"' + d.title + '"';
+  document.getElementById('tg-chat-input').value = '';
+  document.getElementById('tg-modal-err').textContent = '';
+  document.getElementById('tg-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('tg-chat-input').focus(), 50);
+}
+
+function _closeTrackModal() {
+  const m = document.getElementById('tg-modal');
+  if (m) m.style.display = 'none';
+}
+
+async function _confirmTrack() {
+  const raw = (document.getElementById('tg-chat-input').value || '').trim();
+  const errEl = document.getElementById('tg-modal-err');
+  const confirmBtn = document.getElementById('tg-confirm-btn');
+  if (!raw) { errEl.textContent = 'Please enter your Chat ID'; return; }
+  if (!/^-?\d+$/.test(raw)) { errEl.textContent = 'Chat ID must be a number — check @userinfobot'; return; }
+  errEl.textContent = '';
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'Saving…';
+  const d   = currentPanelData;
+  const bid = getBrowserId();
+  const set = await getTracked();
+  const payload = {
+    browser_id:       bid,
+    title:            d.title,
+    content_type:     d.type || 'movie',
+    tmdb_id:          String(d.tmdb_id || ''),
+    poster:           d.poster || '',
+    platform:         d.platform || null,
+    stream_url:       d.stream_url || null,
+    score:            d.score || null,
+    telegram_chat_id: raw,
+  };
+  try {
+    const r = await fetch(`${SUPA_URL}/rest/v1/watchlist`, {
+      method: 'POST',
+      headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON,
+                 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+      body: JSON.stringify(payload)
+    });
+    if (r.ok || r.status === 409) {
+      set.add(d.title);
+      _closeTrackModal();
+      const btn   = document.getElementById('pp-track-btn');
+      const label = document.getElementById('pp-track-label');
+      if (btn)   btn.classList.add('tracked');
+      if (label) label.textContent = 'Tracked ✓';
+      showToast('✅', `Tracking "${d.title}" — Telegram alert set 🔔`, 3500);
+    } else {
+      errEl.textContent = 'Could not save — try again';
+    }
+  } catch(e) { errEl.textContent = 'Network error — try again'; }
+  confirmBtn.disabled = false;
+  confirmBtn.textContent = 'Track →';
+}
+
 async function toggleTrack(d) {
   if (!d) return;
-  if (!SUPA_URL || !SUPA_ANON) {
-    showToast('⚠️', 'Supabase anon key not configured', 3000);
-    return;
-  }
-  const bid   = getBrowserId();
+  if (!SUPA_URL || !SUPA_ANON) { showToast('⚠️', 'Supabase anon key not configured', 3000); return; }
   const set   = await getTracked();
   const title = d.title;
+  const bid   = getBrowserId();
   const btn   = document.getElementById('pp-track-btn');
   const label = document.getElementById('pp-track-label');
-
   if (set.has(title)) {
-    // Untrack — DELETE row
     try {
       const r = await fetch(
         `${SUPA_URL}/rest/v1/watchlist?browser_id=eq.${encodeURIComponent(bid)}&title=eq.${encodeURIComponent(title)}`,
-        { method: 'DELETE',
-          headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON,
-                     'Content-Type': 'application/json', Prefer: 'return=minimal' } }
+        { method: 'DELETE', headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON,
+            'Content-Type': 'application/json', Prefer: 'return=minimal' } }
       );
       if (r.ok) {
         set.delete(title);
-        btn.classList.remove('tracked');
-        label.textContent = 'Track';
+        if (btn)   btn.classList.remove('tracked');
+        if (label) label.textContent = 'Track';
         showToast('🔕', `"${title}" removed from watchlist`, 2500);
       }
     } catch(e) { showToast('❌', 'Error removing from watchlist', 3000); }
   } else {
-    // Track — INSERT row
-    const payload = {
-      browser_id:   bid,
-      title:        title,
-      content_type: d.type || 'movie',
-      tmdb_id:      String(d.tmdb_id || ''),
-      poster:       d.poster || '',
-      platform:     d.platform || null,
-      stream_url:   d.stream_url || null,
-      score:        d.score || null,
-    };
-    try {
-      const r = await fetch(
-        `${SUPA_URL}/rest/v1/watchlist`,
-        { method: 'POST',
-          headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON,
-                     'Content-Type': 'application/json', Prefer: 'return=minimal' } ,
-          body: JSON.stringify(payload) }
-      );
-      if (r.ok || r.status === 409) {  // 409 = already exists (unique constraint)
-        set.add(title);
-        btn.classList.add('tracked');
-        label.textContent = 'Tracked ✓';
-        const isDiscover = !d.stream_url;
-        const msg = isDiscover
-          ? `Tracking "${title}" — you'll get a Telegram alert when it lands on a service 🔔`
-          : `"${title}" added to watchlist`;
-        showToast('✅', msg, 3500);
-      } else {
-        showToast('❌', 'Could not save to watchlist', 3000);
-      }
-    } catch(e) { showToast('❌', 'Error saving to watchlist', 3000); }
+    _openTrackModal(d);
   }
 }
 

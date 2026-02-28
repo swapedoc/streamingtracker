@@ -15,7 +15,8 @@ REQUIRED .env:
   SUPABASE_URL=https://xxxx.supabase.co
   SUPABASE_KEY=<service_role_key>          # NOT the anon key — needs UPDATE access
   TELEGRAM_BOT_TOKEN=<bot_token>
-  TELEGRAM_CHAT_ID=<channel_or_group_id>  # e.g. -100xxxxxxxxxx for a channel
+  TELEGRAM_BOT_TOKEN=<bot_token>   # one bot for all users
+  # No global TELEGRAM_CHAT_ID needed — each user provides their own
 
 HOW IT WORKS:
   1. Fetch all watchlist rows where notified=FALSE and platform IS NULL
@@ -40,7 +41,6 @@ load_dotenv()
 SUPABASE_URL        = os.getenv('SUPABASE_URL')
 SUPABASE_KEY        = os.getenv('SUPABASE_KEY')   # service role key
 TELEGRAM_BOT_TOKEN  = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_ID    = os.getenv('TELEGRAM_CHAT_ID')
 
 GQL         = 'https://apis.justwatch.com/graphql'
 MAX_WORKERS = 10
@@ -197,36 +197,65 @@ def check_streaming(title: str, content_type: str):
 
 # ── Telegram ─────────────────────────────────────────────────────────────────
 
-def send_telegram(message: str) -> bool:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print('  ⚠️  Telegram credentials not set — skipping notification')
+def send_telegram(chat_id: str, message: str) -> bool:
+    """Send a message to a specific user's Telegram chat."""
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
         return False
     url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
     try:
         r = requests.post(url, json={
-            'chat_id':    TELEGRAM_CHAT_ID,
+            'chat_id':    chat_id,
             'text':       message,
             'parse_mode': 'HTML',
         }, timeout=10)
         return r.status_code == 200
     except Exception as e:
-        print(f'  ❌ Telegram error: {e}')
+        print(f'  ❌ Telegram error for chat {chat_id}: {e}')
         return False
 
-def send_batch_alert(hits: list[dict]) -> bool:
-    """Send one Telegram message summarising all newly available titles."""
+def send_user_alerts(hits: list[dict]) -> tuple[int, int]:
+    """
+    Send individual Telegram alerts to each user who tracked a title.
+    Each row has its own telegram_chat_id — users get only their titles.
+    Returns (sent_count, failed_count).
+    """
     if not hits:
-        return True
-    lines = ['🎬 <b>StreamIQ — New Arrivals Alert</b>\n']
+        return 0, 0
+
+    # Group hits by telegram_chat_id so each user gets one message
+    from collections import defaultdict
+    by_user: dict[str, list] = defaultdict(list)
+    no_tg = 0
     for h in hits:
-        emoji = '🎥' if h['content_type'] != 'tv' else '📺'
-        lines.append(
-            f"{emoji} <b>{h['title']}</b>\n"
-            f"   ▶ Now on <b>{h['platform']}</b>\n"
-            f"   {h['stream_url']}\n"
-        )
-    lines.append('\n<i>Manage your watchlist on StreamIQ</i>')
-    return send_telegram('\n'.join(lines))
+        tg = h.get('telegram_chat_id')
+        if tg:
+            by_user[tg].append(h)
+        else:
+            no_tg += 1
+
+    if no_tg:
+        print(f'  ⚠️  {no_tg} row(s) had no telegram_chat_id — skipped')
+
+    sent = failed = 0
+    for chat_id, user_hits in by_user.items():
+        lines = ['🎬 <b>StreamIQ — Available to Stream Now!</b>\n']
+        for h in user_hits:
+            emoji = '🎥' if h['content_type'] != 'tv' else '📺'
+            lines.append(
+                f'{emoji} <b>{h["title"]}</b>\n'
+                f'   ▶ Now on <b>{h["platform"]}</b>\n'
+                f'   {h["stream_url"]}\n'
+            )
+        lines.append('\n<i>Manage your watchlist on StreamIQ</i>')
+        ok = send_telegram(chat_id, '\n'.join(lines))
+        if ok:
+            sent += 1
+            print(f'  📨 Sent to chat {chat_id} ({len(user_hits)} title(s))')
+        else:
+            failed += 1
+            print(f'  ❌ Failed to send to chat {chat_id}')
+
+    return sent, failed
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -245,7 +274,7 @@ def main():
     print('\n📥 Fetching pending watchlist items...')
     result = (
         db.table('watchlist')
-        .select('id, browser_id, title, content_type, platform, stream_url')
+        .select('id, browser_id, title, content_type, platform, stream_url, telegram_chat_id')
         .eq('notified', False)
         .is_('platform', 'null')   # only Discover items (no platform yet)
         .execute()
@@ -255,7 +284,7 @@ def main():
     # Also include rows that had a platform but notified=False (newly added Watch Now items)
     result2 = (
         db.table('watchlist')
-        .select('id, browser_id, title, content_type, platform, stream_url')
+        .select('id, browser_id, title, content_type, platform, stream_url, telegram_chat_id')
         .eq('notified', False)
         .not_.is_('platform', 'null')
         .execute()
@@ -320,8 +349,11 @@ def main():
                         }).eq('id', row['id']).execute()
                     except Exception as e:
                         print(f'     ❌ DB update failed for row {row["id"]}: {e}')
-                hits.append({'title': title, 'content_type': row_list[0]['content_type'],
-                             'platform': plat, 'stream_url': url or ''})
+                # Each row gets its own entry so per-user grouping works
+                for row in row_list:
+                    hits.append({'title': title, 'content_type': row.get('content_type','movie'),
+                                 'platform': plat, 'stream_url': url or '',
+                                 'telegram_chat_id': row.get('telegram_chat_id')})
             else:
                 print('— not yet')
                 misses.append(title)
@@ -330,9 +362,9 @@ def main():
     print(f'\n📊 Summary: {len(hits)} new arrivals · {len(misses)} still pending · {len(errors)} errors')
 
     if hits:
-        print(f'\n📨 Sending Telegram alert for {len(hits)} title(s)...')
-        ok = send_batch_alert(hits)
-        print('  ✅ Sent!' if ok else '  ❌ Failed to send Telegram message')
+        print(f'\n📨 Sending Telegram alerts for {len(hits)} row(s)...')
+        sent, failed = send_user_alerts(hits)
+        print(f'  ✅ Sent to {sent} user(s)' + (f', ❌ {failed} failed' if failed else ''))
     else:
         print('\n💤 No new arrivals — no Telegram message sent')
 
