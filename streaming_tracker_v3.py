@@ -3643,6 +3643,79 @@ def _enrich_discover_details():
     print(f"   ✅ Enriched {updated} rows  ⚠️  {errors} errors")
 
 
+def embed_new_discover():
+    """
+    Generate Gemini embeddings for any discover_content rows that don't have
+    one yet. Runs at the end of every tracker run so new titles are always
+    searchable via Vibe Search immediately.
+    """
+    gemini_key = os.getenv('GEMINI_API_KEY')
+    if not gemini_key:
+        print("\n⚠️  GEMINI_API_KEY not set — skipping embedding step")
+        return
+
+    try:
+        import requests as _req
+        import time as _time
+    except ImportError:
+        print("\n⚠️  requests not available — skipping embedding step")
+        return
+
+    db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+
+    # Fetch only rows missing embeddings — paginate past 1000-row limit
+    rows = []
+    offset = 0
+    while True:
+        batch = (
+            db.table('discover_content')
+            .select('id, title, genre, tv_genre, content_type, release_year, overview')
+            .is_('embedding', 'null')
+            .range(offset, offset + 999)
+            .execute()
+            .data or []
+        )
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
+        offset += 1000
+
+    if not rows:
+        print("\n✅ Embeddings: all discover titles already embedded")
+        return
+
+    print(f"\n🔮 Embedding {len(rows)} new discover title(s)...")
+
+    GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={gemini_key}"
+    success = errors = 0
+
+    for i, row in enumerate(rows):
+        parts = [f"Title: {row.get('title', '')}"]
+        if row.get('genre'):      parts.append(f"Genre: {row['genre']}")
+        if row.get('tv_genre'):   parts.append(f"Genre: {row['tv_genre']}")
+        if row.get('content_type'): parts.append(f"Type: {'Series' if row['content_type'] == 'tv' else 'Film'}")
+        if row.get('release_year'): parts.append(f"Year: {row['release_year']}")
+        if row.get('overview'):   parts.append(f"Synopsis: {str(row['overview'])[:500]}")
+        text = '. '.join(parts)
+
+        try:
+            r = _req.post(GEMINI_URL,
+                json={'model': 'models/gemini-embedding-001', 'content': {'parts': [{'text': text}]}},
+                timeout=15)
+            r.raise_for_status()
+            embedding = r.json()['embedding']['values']
+            db.table('discover_content').update({'embedding': embedding}).eq('id', row['id']).execute()
+            success += 1
+            print(f"   [{i+1}/{len(rows)}] ✅ {row.get('title','?')[:55]}")
+        except Exception as e:
+            errors += 1
+            print(f"   [{i+1}/{len(rows)}] ❌ {row.get('title','?')[:40]} — {e}")
+
+        _time.sleep(0.25)  # ~4 req/s — well within Gemini free tier
+
+    print(f"   Embedded: {success}  Errors: {errors}")
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
@@ -3734,6 +3807,9 @@ def main():
         jw = JustWatchFetcher()
         jw.run()           # Watch Now — fetches links for 'content' table
         jw.run_discover()  # Discover — fetches links for 'discover_content' table
+
+    # Embed any new Discover titles for Vibe Search
+    embed_new_discover()
 
     print("\n" + "="*70)
     print("🎉 BOTH FLOWS COMPLETE!")

@@ -646,6 +646,8 @@ if err or not watch_data:
     st.error(f"Data error: {err}")
     st.stop()
 
+
+
 def safe(v):
     if v is None: return ''
     try:
@@ -1586,6 +1588,50 @@ body:has(.dc:hover) #cursor-ring {
 }
 .wl-remove-btn:hover { background: rgba(255,68,85,0.1); border-color: #FF4455; }
 
+/* ── VIBE SEARCH ── */
+.vibe-bar {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(232,197,71,0.04);
+  border: 1px solid rgba(232,197,71,0.2);
+  border-radius: 6px; padding: 10px 16px; margin-bottom: 20px;
+  transition: border-color .2s;
+}
+.vibe-bar:focus-within { border-color: rgba(232,197,71,0.5); }
+.vibe-icon { font-size: 1.1rem; flex-shrink: 0; }
+.vibe-input {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: #fff; font-family: var(--mono); font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+.vibe-input::placeholder { color: #555; }
+.vibe-btn {
+  background: #E8C547; border: none; border-radius: 4px;
+  color: #07070A; font-family: var(--mono); font-size: 0.65rem;
+  font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 7px 16px; cursor: pointer; flex-shrink: 0; transition: background .2s;
+}
+.vibe-btn:hover { background: #f0d060; }
+.vibe-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.vibe-clear-btn {
+  background: transparent; border: 1px solid rgba(255,255,255,0.15);
+  color: #888; font-family: var(--mono); font-size: 0.62rem;
+  letter-spacing: 0.08em; padding: 6px 12px; border-radius: 4px;
+  cursor: pointer; flex-shrink: 0; transition: all .2s;
+}
+.vibe-clear-btn:hover { border-color: #aaa; color: #ccc; }
+.vibe-results-label {
+  color: var(--gold); font-family: var(--mono); font-size: 0.65rem;
+  letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;
+}
+.vibe-divider {
+  text-align: center; color: #333; font-family: var(--mono);
+  font-size: 0.6rem; letter-spacing: 0.15em; margin: 24px 0 16px;
+}
+.vibe-match-pct {
+  font-family: var(--mono); font-size: 0.6rem;
+  color: #E8C547; letter-spacing: 0.08em;
+}
+
 /* ═══════════════════════════════════════════════════
    DISCOVER GRID
 ═══════════════════════════════════════════════════ */
@@ -1975,6 +2021,21 @@ body:has(.dc:hover) #cursor-ring {
 <!-- ── DISCOVER TAB ── -->
 <div id="tab-disc" style="display:none">
   <div class="stats-ribbon" id="ds"></div>
+
+  <!-- ── VIBE SEARCH BAR ── -->
+  <div class="vibe-bar">
+    <span class="vibe-icon">🔮</span>
+    <input id="vibe-input" class="vibe-input"
+      placeholder="Describe a vibe… e.g. 'mind-bending sci-fi with a twist ending'"
+      autocomplete="off" spellcheck="false"/>
+    <button class="vibe-btn" id="vibe-btn" onclick="vibeSearch()">Search</button>
+    <button class="vibe-clear-btn" id="vibe-clear-btn" onclick="vibeClear()" style="display:none">✕ Clear</button>
+  </div>
+  <div id="vibe-results-section" style="display:none">
+    <div class="vibe-results-label">✨ Semantic matches for "<span id="vibe-query-label"></span>"</div>
+    <div class="disc-grid" id="vibe-grid"></div>
+    <div class="vibe-divider">— Regular results below —</div>
+  </div>
   <div class="ctrl">
     <button class="pill on" data-dp="all"         onclick="sdP('all',this)">All</button>
     <button class="pill" data-dp="Netflix"         onclick="sdP('Netflix',this)">Netflix</button>
@@ -2888,6 +2949,96 @@ function wPolar() {
   showTab('watch', document.querySelector('.tab'));
   renderWatch();
 }
+
+/* ── VIBE SEARCH (Edge Function) ── */
+
+function _makeVibeCard(d, i) {
+  const img      = d.poster_path ? 'https://image.tmdb.org/t/p/w200' + d.poster_path : null;
+  const matchPct = Math.round((d.similarity || 0) * 100);
+  const tmdb     = d.tmdb_id ? `https://www.themoviedb.org/${d.content_type==='tv'?'tv':'movie'}/${d.tmdb_id}` : '#';
+  const delay    = (i % 20) * 0.04;
+  const platCol  = pc(d.platform || '');
+  return `
+<div class="dc fu" style="animation-delay:${delay}s;--cc:#E8C547;">
+  <a href="${tmdb}" target="_blank" style="text-decoration:none;color:inherit;display:flex;flex-direction:column;flex:1">
+  <div class="dc-poster">
+    ${img ? `<img src="${img}" loading="lazy" alt=""/>` : `<div class="dc-poster-ph">🎬</div>`}
+  </div>
+  <div class="dc-body">
+    <div class="dc-title">${d.title}</div>
+    <div class="dc-sub">${d.content_type==='tv'?'Series':'Film'} · ${d.platform||'—'}</div>
+    <div class="dc-foot">
+      <span class="vibe-match-pct">🔮 ${matchPct}% match</span>
+    </div>
+  </div>
+  </a>
+</div>`;
+}
+
+async function vibeSearch() {
+  const inp = document.getElementById('vibe-input');
+  const q   = (inp ? inp.value : '').trim();
+  if (!q) return;
+
+  const btn      = document.getElementById('vibe-btn');
+  const section  = document.getElementById('vibe-results-section');
+  const grid     = document.getElementById('vibe-grid');
+  const label    = document.getElementById('vibe-query-label');
+  const clearBtn = document.getElementById('vibe-clear-btn');
+
+  // Loading state
+  if (btn)   { btn.disabled = true; btn.textContent = '⏳'; }
+  if (section) section.style.display = '';
+  if (grid)    grid.innerHTML = '<div class="empty" style="padding:40px 0">🔮 Scanning vectors…</div>';
+  if (label)   label.textContent = q;
+  if (clearBtn) clearBtn.style.display = '';
+
+  try {
+    const res = await fetch(`${SUPA_URL}/functions/v1/vibe-search`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': 'Bearer ' + SUPA_ANON,
+        'apikey':        SUPA_ANON,
+      },
+      body: JSON.stringify({ query: q })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+
+    const results = await res.json();
+
+    if (!results || !results.length) {
+      grid.innerHTML = '<div class="empty">No matches found — try different words</div>';
+    } else {
+      grid.innerHTML = results.map((d, i) => _makeVibeCard(d, i)).join('');
+    }
+
+  } catch(err) {
+    console.error('Vibe search failed:', err);
+    grid.innerHTML = `<div class="empty" style="color:#FF4455">Search failed: ${err.message}</div>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Search'; }
+  }
+}
+
+function vibeClear() {
+  const section  = document.getElementById('vibe-results-section');
+  const inp      = document.getElementById('vibe-input');
+  const clearBtn = document.getElementById('vibe-clear-btn');
+  if (section)  section.style.display = 'none';
+  if (inp)      inp.value = '';
+  if (clearBtn) clearBtn.style.display = 'none';
+}
+
+// Enter key support
+(function() {
+  const inp = document.getElementById('vibe-input');
+  if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter') vibeSearch(); });
+})();
 
 /* ── WATCHLIST TAB LOGIC ── */
 
