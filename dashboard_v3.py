@@ -2044,7 +2044,7 @@ function renderWatch() {
   renderStats(W, 'ws', false);
   const el = document.getElementById('wg');
   if (!data.length) { el.innerHTML = '<div class="empty">No titles match your filters</div>'; return; }
-  el.innerHTML = data.slice(0,80).map((d, i) => makeCard(d, i, wIdxFor(d))).join('');
+  el.innerHTML = data.slice(0,200).map((d, i) => makeCard(d, i, wIdxFor(d))).join('');
   el.querySelectorAll('.card').forEach(card => {
     const idx = parseInt(card.dataset.widx);
     if (isNaN(idx) || idx < 0 || idx >= W.length) return;

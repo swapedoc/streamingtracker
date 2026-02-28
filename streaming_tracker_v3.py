@@ -130,8 +130,8 @@ class Config:
     }
     
     # WATCH NOW FLOW (with reviews & scoring)
-    WATCH_NOW_TRENDING_LIMIT = 20
-    WATCH_NOW_MAX_VIDEOS_PER_PLATFORM = 10
+    WATCH_NOW_TRENDING_LIMIT = 120
+    WATCH_NOW_MAX_VIDEOS_PER_PLATFORM = 25
     
     # DISCOVER FLOW (no reviews, just availability)
     DISCOVER_CLASSICS_LIMIT = 120
@@ -171,23 +171,29 @@ class TMDbResolver:
         self._session.mount("https://", HTTPAdapter(max_retries=retry, pool_maxsize=10))
     
     def get_trending(self, media_type='all', time_window='week', limit=20) -> List[Dict]:
-        """Get trending content from TMDb"""
+        """Get trending content from TMDb — supports multi-page fetching for limit > 20"""
+        import math as _math
         url = f"{self.base_url}/trending/{media_type}/{time_window}"
-        params = {'api_key': self.api_key}
-        
-        for attempt in range(4):
-            try:
-                response = self._session.get(url, params=params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                break
-            except Exception as e:
-                if attempt == 3:
-                    print(f"❌ TMDb trending error: {e}")
-                    return []
-                wait_time = attempt + 1
-                print(f"   ⚡️ Retrying in {wait_time}s...")
-                time.sleep(wait_time)
+        pages_needed = _math.ceil(limit / 20)
+        all_results = []
+
+        for page in range(1, pages_needed + 1):
+            params = {'api_key': self.api_key, 'page': page}
+            for attempt in range(4):
+                try:
+                    response = self._session.get(url, params=params, timeout=10)
+                    response.raise_for_status()
+                    page_data = response.json()
+                    all_results.extend(page_data.get('results', []))
+                    break
+                except Exception as e:
+                    if attempt == 3:
+                        print(f"TMDb trending error (page {page}): {e}")
+                    else:
+                        import time as _time
+                        _time.sleep(attempt + 1)
+
+        data = {'results': all_results[:limit]}
 
         try:
             trending = []
@@ -204,8 +210,9 @@ class TMDbResolver:
                     item.get('release_date') if media_type == 'movie' else item.get('first_air_date')
                 )
 
-                # Skip old titles — they belong in Discover, not Watch Now
-                if release_year and (current_year - release_year) > WATCH_NOW_MAX_AGE:
+                # Skip old MOVIES — they belong in Discover, not Watch Now
+                # TV series are EXEMPT — a show trending now likely has a new season
+                if media_type == 'movie' and release_year and (current_year - release_year) > WATCH_NOW_MAX_AGE:
                     continue
 
                 trending.append({
@@ -716,6 +723,7 @@ class SentimentAnalyzer:
         # Tier 1: Groq (Fastest & Most generous free tier)
         self.groq_client = None
         self.use_groq = False
+        self.groq_rate_limit_until = 0  # timestamp when Groq is available again
         groq_key = os.getenv('GROQ_API_KEY')
         if groq_key:
             try:
@@ -751,11 +759,16 @@ class SentimentAnalyzer:
             return {'sentiment': 0, 'confidence': 0.0}
         
         # Try Tier 1: Groq
+        import time as _t
         if self.use_groq:
-            result = self._groq_analyze(text)
-            if result:
-                return result
-            print("    ⤵️ Groq failed, falling back to Gemini...")        
+            if self.groq_rate_limit_until > _t.time():
+                pass  # still in cooldown, skip to Gemini silently
+            else:
+                result = self._groq_analyze(text)
+                if result:
+                    return result
+                if self.groq_rate_limit_until <= _t.time():  # only print if not rate limited
+                    print("    ⤵️ Groq failed, falling back to Gemini...")        
         # Try Tier 2: Gemini
         if self.use_gemini:
             result = self._gemini_analyze(text)
@@ -798,8 +811,9 @@ Review: {text[:2000]}"""
         except Exception as e:
             # Check if rate limited
             if '429' in str(e) or 'rate' in str(e).lower():
-                print(f"  ⚡️ Groq rate limited, trying Gemini...")
-                self.use_groq = False  # Disable for this session
+                import time as _t
+                self.groq_rate_limit_until = _t.time() + 60  # cooldown 60 seconds
+                print(f"  ⚡️ Groq rate limited — cooling down 60s, trying Gemini...")
             else:
                 print(f"  ⚡️ Groq error: {str(e)[:100]}")
             return None
@@ -2146,7 +2160,7 @@ class YouTubeIngester:
         spinner = Spinner("Fetching Hindi trending").start()
         indian_trending = []
         for media_type in ['movie', 'tv']:
-            indian_trending.extend(self.tmdb.get_trending_indian(media_type, limit=10))
+            indian_trending.extend(self.tmdb.get_trending_indian(media_type, limit=20))
         spinner.stop(f"Hindi trending: {len(indian_trending)} titles")
         
         # Interleave Hindi titles into global list so they aren't pushed past the per-platform cap.
@@ -2261,11 +2275,41 @@ class ScoreComputer:
 
         # Load everything in TWO queries instead of N+1
         spinner = Spinner("Loading content + reviews").start()
-        content_result = self.db.table('content').select('*').execute()
-        reviews_result = self.db.table('reviews').select(
-            'content_id,source,sentiment,confidence,weighted_sentiment'
-        ).execute()
+        # Paginate content too — same Supabase 1000 row cap
+        all_content = []
+        page = 0
+        while True:
+            batch = self.db.table('content').select('*').range(page * 1000, (page + 1) * 1000 - 1).execute()
+            if not batch.data:
+                break
+            all_content.extend(batch.data)
+            if len(batch.data) < 1000:
+                break
+            page += 1
+        class _ContentResult:
+            def __init__(self, data): self.data = data
+        content_result = _ContentResult(all_content)
+
+        # Paginate reviews — Supabase silently caps at 1000 rows without this
+        all_reviews = []
+        PAGE_SIZE = 1000
+        page = 0
+        while True:
+            batch = self.db.table('reviews').select(
+                'content_id,source,sentiment,confidence,weighted_sentiment'
+            ).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1).execute()
+            if not batch.data:
+                break
+            all_reviews.extend(batch.data)
+            if len(batch.data) < PAGE_SIZE:
+                break
+            page += 1
+
+        class _ReviewsResult:
+            def __init__(self, data): self.data = data
+        reviews_result = _ReviewsResult(all_reviews)
         spinner.stop()
+        print(f"   📦 {len(all_reviews)} reviews loaded across {page + 1} page(s)")
 
         if not content_result.data:
             print("⚡️ No content found")
