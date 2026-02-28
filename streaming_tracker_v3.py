@@ -33,6 +33,19 @@ CREATE TABLE IF NOT EXISTS discover_content (
 CREATE INDEX IF NOT EXISTS idx_discover_category ON discover_content(category);
 CREATE INDEX IF NOT EXISTS idx_discover_platform ON discover_content(platform);
 CREATE INDEX IF NOT EXISTS idx_discover_genre ON discover_content(genre);
+
+-- ── Binge Time + Trailer columns (run once) ───────────────────────────────────
+ALTER TABLE content          ADD COLUMN IF NOT EXISTS runtime          INTEGER;  -- minutes (movies)
+ALTER TABLE content          ADD COLUMN IF NOT EXISTS seasons          INTEGER;  -- TV only
+ALTER TABLE content          ADD COLUMN IF NOT EXISTS episode_count    INTEGER;  -- TV only
+ALTER TABLE content          ADD COLUMN IF NOT EXISTS episode_runtime  INTEGER;  -- mins per ep, TV only
+ALTER TABLE content          ADD COLUMN IF NOT EXISTS trailer_id       TEXT;     -- YouTube video ID
+ALTER TABLE content          ADD COLUMN IF NOT EXISTS genre            TEXT;     -- resolved genre label
+ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS runtime          INTEGER;
+ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS seasons          INTEGER;
+ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_count    INTEGER;
+ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_runtime  INTEGER;
+ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS trailer_id       TEXT;
 """
 
 import os
@@ -120,13 +133,20 @@ class Config:
     
     # Genre IDs for TMDb
     GENRES = {
+        # Movie genre IDs
         'Action': 28,
         'Horror': 27,
         'Comedy': 35,
         'Drama': 18,
         'Thriller': 53,
         'Sci-Fi': 878,
-        'Romance': 10749
+        'Romance': 10749,
+        # TV-specific genre IDs (TMDb uses different IDs for TV)
+        # These map back to the same label as their movie equivalent
+        'Action_tv': 10759,   # Action & Adventure
+        'Sci-Fi_tv': 10765,   # Sci-Fi & Fantasy
+        'Drama_tv': 18,       # same ID as movie Drama
+        'Comedy_tv': 35,      # same ID as movie Comedy
     }
     
     # WATCH NOW FLOW (with reviews & scoring)
@@ -225,7 +245,9 @@ class TMDbResolver:
                     'overview': item.get('overview'),
                     'popularity': item.get('popularity', 0),
                     'imdb_rating': item.get('vote_average'),
-                    'category': 'trending'
+                    'category': 'trending',
+                    'genre': self._resolve_genre(item.get('genre_ids', [])),
+                    'tv_genre': self._resolve_tv_genre(item.get('genre_ids', [])) if media_type == 'tv' else None,
                 })
 
             print(f"✅ Found {len(trending)} trending titles (within {WATCH_NOW_MAX_AGE} years)")
@@ -281,6 +303,8 @@ class TMDbResolver:
                         "popularity": item.get("popularity", 0),
                         "imdb_rating": item.get("vote_average"),
                         "category": "trending",
+                        "genre": self._resolve_genre(item.get("genre_ids", []), fallback="Hindi"),
+                        "tv_genre": self._resolve_tv_genre(item.get("genre_ids", [])) if media_type == "tv" else None,
                         "language": "hi",
                         "language_name": "Hindi",
                         "is_indian": True
@@ -336,6 +360,8 @@ class TMDbResolver:
                             "popularity": item.get("popularity", 0),
                             "imdb_rating": item.get("vote_average"),
                             "category": "trending",
+                            "genre": self._resolve_genre(item.get("genre_ids", []), fallback="Hindi"),
+                            "tv_genre": self._resolve_tv_genre(item.get("genre_ids", [])) if mt == "tv" else None,
                             "language": "hi",
                             "language_name": "Hindi",
                             "is_indian": True
@@ -379,6 +405,172 @@ class TMDbResolver:
                 pass
         return None
 
+    # Priority order: more specific / scarcer genres first so they're not
+    # drowned out by Drama or Action which TMDb attaches to almost everything.
+    _GENRE_PRIORITY = [
+        'Horror', 'Sci-Fi', 'Thriller', 'Romance', 'Comedy', 'Action', 'Drama'
+    ]
+
+    # TMDb TV genre IDs → our normalised movie-style label
+    # Used by _resolve_genre so films and TV share the same label vocabulary
+    _TV_GENRE_MAP = {
+        10759: 'Action',    # Action & Adventure → Action
+        10765: 'Sci-Fi',    # Sci-Fi & Fantasy   → Sci-Fi
+        10766: 'Drama',     # Soap
+        10768: 'Drama',     # War & Politics
+        10762: 'Comedy',    # Kids
+        10763: 'Drama',     # News
+        10764: 'Drama',     # Reality
+        80:    'Thriller',  # Crime → closest match for Thriller TV
+        9648:  'Thriller',  # Mystery → also Thriller
+    }
+
+    # TMDb TV genre IDs → human-readable TV label (used for tv_genre field)
+    _TV_GENRE_LABELS = {
+        10759: 'Action & Adventure',
+        10765: 'Sci-Fi & Fantasy',
+        35:    'Comedy',
+        18:    'Drama',
+        80:    'Crime',
+        9648:  'Mystery',
+        10751: 'Family',
+        16:    'Animation',
+        99:    'Documentary',
+        10766: 'Soap',
+        10768: 'War & Politics',
+        37:    'Western',
+    }
+
+    # Priority for TV genre label selection
+    _TV_GENRE_PRIORITY = [
+        'Action & Adventure', 'Sci-Fi & Fantasy', 'Crime', 'Mystery',
+        'Comedy', 'Drama', 'Animation', 'Family', 'Documentary',
+        'Soap', 'War & Politics', 'Western',
+    ]
+
+    # Reverse lookup: TMDb genre_id -> our movie-style label (populated lazily)
+    _ID_TO_GENRE: Dict[int, str] = {}
+
+    def _resolve_genre(self, genre_ids: list, fallback: Optional[str] = None) -> Optional[str]:
+        """
+        Returns a movie-style genre label (Horror, Action, Sci-Fi etc.)
+        Works for both movies and TV — TV IDs are mapped via _TV_GENRE_MAP.
+        """
+        if not self._ID_TO_GENRE:
+            for label, gid in Config.GENRES.items():
+                if '_tv' not in label:
+                    TMDbResolver._ID_TO_GENRE[gid] = label
+            for gid, label in self._TV_GENRE_MAP.items():
+                TMDbResolver._ID_TO_GENRE[gid] = label
+
+        matched = [self._ID_TO_GENRE[gid] for gid in (genre_ids or [])
+                   if gid in self._ID_TO_GENRE]
+        if not matched:
+            return fallback
+
+        seen = set()
+        matched = [x for x in matched if not (x in seen or seen.add(x))]
+
+        for preferred in self._GENRE_PRIORITY:
+            if preferred in matched:
+                return preferred
+        return matched[0]
+
+    def _resolve_tv_genre(self, genre_ids: list) -> Optional[str]:
+        """
+        Returns the best human-readable TMDb TV genre label for a TV show.
+        e.g. 'Action & Adventure', 'Crime', 'Sci-Fi & Fantasy', 'Mystery' etc.
+        Returns None for movies (caller should only call this for tv content).
+        """
+        matched = [self._TV_GENRE_LABELS[gid] for gid in (genre_ids or [])
+                   if gid in self._TV_GENRE_LABELS]
+        if not matched:
+            return None
+
+        seen = set()
+        matched = [x for x in matched if not (x in seen or seen.add(x))]
+
+        for preferred in self._TV_GENRE_PRIORITY:
+            if preferred in matched:
+                return preferred
+        return matched[0]
+
+    def get_runtime_and_trailer(self, tmdb_id: int, media_type: str) -> dict:
+        """
+        Fetch runtime details + official trailer ID in two parallel calls.
+
+        Returns a dict ready to merge into a content row:
+          runtime         – total minutes (movies) or None (TV)
+          seasons         – number of seasons (TV) or None (movies)
+          episode_count   – total episodes (TV) or None
+          episode_runtime – minutes per episode (TV) or None
+          trailer_id      – YouTube video ID of the official trailer, or None
+        """
+        result = {
+            'runtime': None, 'seasons': None,
+            'episode_count': None, 'episode_runtime': None,
+            'trailer_id': None,
+        }
+        mt = 'movie' if media_type != 'tv' else 'tv'
+
+        # ── Details (runtime / seasons) ───────────────────────────────────
+        try:
+            r = self._session.get(
+                f"{self.base_url}/{mt}/{tmdb_id}",
+                params={'api_key': self.api_key},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if mt == 'movie':
+                    result['runtime'] = data.get('runtime') or None
+                else:
+                    result['seasons']       = data.get('number_of_seasons') or None
+                    result['episode_count'] = data.get('number_of_episodes') or None
+
+                    # TMDb's episode_run_time is unreliable — often empty or [0].
+                    # Fallback chain:
+                    #   1. episode_run_time array (filter out zeros)
+                    #   2. last_episode_to_air.runtime  (most accurate for current season)
+                    #   3. next_episode_to_air.runtime  (rare but sometimes populated)
+                    ep_rt = None
+                    er = [x for x in (data.get('episode_run_time') or []) if x and x > 0]
+                    if er:
+                        ep_rt = er[0]
+                    if not ep_rt:
+                        last = data.get('last_episode_to_air') or {}
+                        ep_rt = last.get('runtime') or None
+                    if not ep_rt:
+                        nxt = data.get('next_episode_to_air') or {}
+                        ep_rt = nxt.get('runtime') or None
+                    result['episode_runtime'] = ep_rt
+        except Exception:
+            pass
+
+        # ── Official trailer via TMDb /videos (free, no YouTube quota) ────
+        try:
+            r = self._session.get(
+                f"{self.base_url}/{mt}/{tmdb_id}/videos",
+                params={'api_key': self.api_key, 'language': 'en-US'},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                videos = r.json().get('results', [])
+                # Priority: official Trailer on YouTube, then Teaser
+                for vtype in ('Trailer', 'Teaser'):
+                    for v in videos:
+                        if (v.get('site') == 'YouTube'
+                                and v.get('type') == vtype
+                                and v.get('official', True)):
+                            result['trailer_id'] = v['key']
+                            break
+                    if result['trailer_id']:
+                        break
+        except Exception:
+            pass
+
+        return result
+
 # ============================================================================
 # DISCOVER FLOW - NO REVIEWS, JUST AVAILABILITY
 # ============================================================================
@@ -421,17 +613,28 @@ class DiscoverFlow:
                              'category': 'classics', 'genre': None})
 
         # ── Genres ────────────────────────────────────────────────────────
+        # TMDb uses different genre IDs for TV vs movies.
+        # e.g. Action movie=28, Action TV=10759 (Action & Adventure)
+        #      Sci-Fi movie=878, Sci-Fi TV=10765 (Sci-Fi & Fantasy)
+        # All others (Horror=27, Thriller=53, Comedy=35, Drama=18, Romance=10749)
+        # are either the same ID or have no direct TV equivalent so we use movie ID.
+        TV_GENRE_ID_OVERRIDE = {
+            'Action': 10759,   # Action & Adventure
+            'Sci-Fi': 10765,   # Sci-Fi & Fantasy
+        }
         for genre_name in Config.DISCOVER_ENABLED_GENRES:
             genre_id = Config.GENRES.get(genre_name)
             if not genre_id:
                 continue
             for mt in ['movie', 'tv']:
+                # Use TV-specific genre ID if available, otherwise fall back to movie ID
+                effective_genre_id = TV_GENRE_ID_OVERRIDE.get(genre_name, genre_id) if mt == 'tv' else genre_id
                 base = {
                     'api_key': self.api_key,
-                    'with_genres': genre_id,
+                    'with_genres': effective_genre_id,
                     'sort_by': 'popularity.desc',
-                    'vote_average.gte': 6.5,
-                    'vote_count.gte': 100,
+                    'vote_average.gte': 6.0 if mt == 'tv' else 6.5,
+                    'vote_count.gte':   50  if mt == 'tv' else 100,
                     'with_watch_providers': '8|119|350|2336|220',
                     'watch_region': 'IN',
                 }
@@ -496,6 +699,18 @@ class DiscoverFlow:
                             title = item.get('title') if mt == 'movie' else item.get('name')
                             release_date = (item.get('release_date') if mt == 'movie'
                                             else item.get('first_air_date')) or '2020-01-01'
+                            # Resolve genre from the item's actual genre_ids, not
+                            # from which query bucket fetched it. job['genre'] is
+                            # only used as a fallback (e.g. 'Hindi' for Indian bucket).
+                            resolved_genre = self.tmdb._resolve_genre(
+                                item.get('genre_ids', []),
+                                fallback=job['genre']
+                            )
+                            # For TV shows, also store the native TMDb TV genre label
+                            resolved_tv_genre = (
+                                self.tmdb._resolve_tv_genre(item.get('genre_ids', []))
+                                if mt == 'tv' else None
+                            )
                             parsed = {
                                 'tmdb_id': item['id'],
                                 'title': title,
@@ -507,7 +722,8 @@ class DiscoverFlow:
                                 'popularity': item.get('popularity', 0),
                                 'imdb_rating': item.get('vote_average'),
                                 'category': job['category'],
-                                'genre': job['genre'],
+                                'genre': resolved_genre,
+                                'tv_genre': resolved_tv_genre,
                             }
                             if job['category'] == 'indian':
                                 parsed['language'] = 'hi'
@@ -666,14 +882,33 @@ class DiscoverFlow:
 
         print(f"\n   💾 Batch-saving {len(expanded)} platform entries...")
 
-        # Deduplicate by (tmdb_id, platform) — same title can appear across categories
-        # Keep the highest-rated category occurrence (classics > genre > underdog)
+        # Deduplicate by (tmdb_id, platform).
+        # Priority: classics=0, underdog=1, indian=2, genre_*=3
+        # BUT for genre buckets: if the resolved genre matches the bucket, that's
+        # a better match than a genre bucket that fetched it incidentally.
+        # e.g. House MD in genre_comedy bucket but resolved genre=Drama → deprioritise.
         CATEGORY_RANK = {'classics': 0, 'underdog': 1, 'indian': 2}
+
+        def _item_rank(item):
+            cat = item['category']
+            base = CATEGORY_RANK.get(cat, 3)
+            if cat.startswith('genre_'):
+                # Extract bucket genre label e.g. 'genre_horror' -> 'Horror'
+                bucket_genre = cat.replace('genre_', '').capitalize()
+                # Sci-Fi special case
+                if bucket_genre == 'Sci-fi':
+                    bucket_genre = 'Sci-Fi'
+                resolved = item.get('genre') or ''
+                # Penalise if the resolved genre doesn't match the bucket
+                if resolved.lower() != bucket_genre.lower():
+                    base = 10  # effectively last priority
+            return base
+
         seen_pairs: dict = {}
         for item, platform in expanded:
             key = (item['tmdb_id'], platform)
-            rank = CATEGORY_RANK.get(item['category'], 3)
-            if key not in seen_pairs or rank < CATEGORY_RANK.get(seen_pairs[key][0]['category'], 3):
+            rank = _item_rank(item)
+            if key not in seen_pairs or rank < _item_rank(seen_pairs[key][0]):
                 seen_pairs[key] = (item, platform)
         rows = []
         for (item, platform) in seen_pairs.values():
@@ -689,6 +924,7 @@ class DiscoverFlow:
                 'overview':        item['overview'],
                 'category':        item['category'],
                 'genre':           item.get('genre'),
+                'tv_genre':        item.get('tv_genre'),
                 'popularity':      item['popularity'],
             })
 
@@ -709,6 +945,40 @@ class DiscoverFlow:
 
         print(f"\n✅ Saved {saved} items to discover_content" +
               (f" ({errors} errors)" if errors else ""))
+
+        # ── Stale row cleanup ──────────────────────────────────────────────
+        # Delete any discover_content rows NOT in this run's fresh fetch.
+        # These are titles no longer available on that platform in India
+        # (expired licences, removed content, etc.).
+        # Safety guard: skip if fetch returned suspiciously few titles —
+        # avoids wiping the table on a partial API failure.
+        print("\n   🧹 Cleaning up stale Discover rows...")
+        try:
+            fresh_keys = {(r['tmdb_id'], r['platform']) for r in rows}
+
+            if len(fresh_keys) < 50:
+                print("   ⚠️  Fetch returned very few titles — skipping stale cleanup as safety measure")
+            else:
+                existing = self.db.table('discover_content') \
+                    .select('id, tmdb_id, platform').execute().data or []
+
+                stale_ids = [
+                    row['id'] for row in existing
+                    if (row['tmdb_id'], row['platform']) not in fresh_keys
+                ]
+
+                if not stale_ids:
+                    print("   ✅ No stale rows found")
+                else:
+                    for i in range(0, len(stale_ids), BATCH):
+                        chunk = stale_ids[i:i + BATCH]
+                        self.db.table('discover_content').delete() \
+                            .in_('id', chunk).execute()
+                    print(f"   🗑️  Removed {len(stale_ids)} stale rows "
+                          f"(titles no longer available on their platform)")
+        except Exception as e:
+            print(f"   ⚠️  Stale cleanup failed (non-fatal): {e}")
+
         print("="*70)
 # ============================================================================
 # SENTIMENT ANALYSIS - 3-TIER CASCADE SYSTEM
@@ -1938,7 +2208,9 @@ class YouTubeIngester:
             'imdb_rating': trending_data['imdb_rating'],
             'poster_path': trending_data['poster_path'],
             'overview': trending_data['overview'],
-            'discovery_source': trending_data.get('category', 'trending')
+            'discovery_source': trending_data.get('category', 'trending'),
+            'genre': trending_data.get('genre'),
+            'tv_genre': trending_data.get('tv_genre'),
         }
         
         try:
@@ -2771,7 +3043,9 @@ class AsyncWatchNowPipeline:
                 'release_year': year, 'imdb_rating': title_data.get('imdb_rating'),
                 'poster_path': title_data.get('poster_path'),
                 'overview': title_data.get('overview'),
-                'discovery_source': title_data.get('category', 'trending')
+                'discovery_source': title_data.get('category', 'trending'),
+                'genre': title_data.get('genre'),
+                'tv_genre': title_data.get('tv_genre'),
             }
             try:
                 result = self.db.table('content').upsert(
@@ -2781,16 +3055,34 @@ class AsyncWatchNowPipeline:
                 print(f"   ❌ DB error {title}: {e}")
                 return
 
-            # All four sources fire simultaneously
-            yt_rows, tmdb_rows, reddit_rows, critic_rows = await asyncio.gather(
+            # All sources + runtime/trailer details fire simultaneously
+            yt_rows, tmdb_rows, reddit_rows, critic_rows, details = await asyncio.gather(
                 self._process_youtube(content_id, title, platform, is_hindi),
                 self._process_tmdb_reviews(content_id, tmdb_id, media_type),
                 asyncio.get_running_loop().run_in_executor(self._executor, self._reddit_sync,
                                      content_id, title, media_type, is_hindi),
                 asyncio.get_running_loop().run_in_executor(self._executor, self._critics_sync,
                                      content_id, title, media_type, year, is_hindi),
+                asyncio.get_running_loop().run_in_executor(self._executor,
+                                     self.tmdb.get_runtime_and_trailer, tmdb_id, media_type),
                 return_exceptions=True
             )
+
+            # Patch content row with runtime + trailer if we got them
+            if isinstance(details, dict) and any(v is not None for v in details.values()):
+                try:
+                    self.db.table('content').update(details).eq('id', content_id).execute()
+                    trailer_note = f" 🎬 trailer={details['trailer_id'][:8]}.." if details.get('trailer_id') else ''
+                    runtime_note = ''
+                    if details.get('runtime'):
+                        h, m = divmod(details['runtime'], 60)
+                        runtime_note = f" ⏱ {h}h{m:02d}m"
+                    elif details.get('seasons'):
+                        runtime_note = f" ⏱ {details['seasons']}s"
+                    if runtime_note or trailer_note:
+                        print(f"   📐 {title[:35]}{runtime_note}{trailer_note}")
+                except Exception as e:
+                    print(f"   ⚠️  Details save failed for {title[:30]}: {e}")
 
             # Collect and bulk-save all reviews in one shot
             all_rows = []
@@ -3108,6 +3400,63 @@ class JustWatchFetcher:
 # MAIN - RUN BOTH FLOWS
 # ============================================================================
 
+def _enrich_discover_details():
+    """
+    Backfill runtime + trailer_id for Discover content rows that are missing them.
+    Processes rows where:
+      - trailer_id IS NULL  (never enriched), OR
+      - TV show with episode_runtime IS NULL or = 0  (enriched but got bad runtime data)
+      - Movie with runtime IS NULL or = 0
+    """
+    db   = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+    tmdb = TMDbResolver()
+
+    # Fetch all rows — we'll filter in Python to cover all missing-data cases
+    all_rows = db.table('discover_content').select(
+        'id, tmdb_id, content_type, trailer_id, runtime, episode_runtime'
+    ).execute().data or []
+
+    to_do = []
+    for r in all_rows:
+        if not r.get('trailer_id'):
+            to_do.append(r)   # never enriched at all
+        elif r.get('content_type') == 'tv' and not r.get('episode_runtime'):
+            to_do.append(r)   # TV row with missing/zero episode runtime
+        elif r.get('content_type') == 'movie' and not r.get('runtime'):
+            to_do.append(r)   # movie with missing/zero runtime
+
+    if not to_do:
+        print("   ⏭  All Discover rows already enriched.")
+        return
+
+    print(f"   🚀 {len(to_do)} rows need runtime/trailer — 20 concurrent workers")
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _ac
+    from threading import Lock
+    lock    = Lock()
+    updated = 0
+    errors  = 0
+
+    def _enrich_one(row):
+        details = tmdb.get_runtime_and_trailer(row['tmdb_id'], row['content_type'])
+        if any(v is not None for v in details.values()):
+            db.table('discover_content').update(details).eq('id', row['id']).execute()
+        return details
+
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        futures = {ex.submit(_enrich_one, r): r for r in to_do}
+        for future in _ac(futures):
+            try:
+                future.result()
+                with lock:
+                    updated += 1
+            except Exception:
+                with lock:
+                    errors += 1
+
+    print(f"   ✅ Enriched {updated} rows  ⚠️  {errors} errors")
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
@@ -3176,6 +3525,10 @@ def main():
     print("\n🔍 STARTING DISCOVER FLOW...")
     discover = DiscoverFlow()
     discover.save_discover_content()
+
+    # Enrich Discover rows with runtime + trailers concurrently
+    print("\n📐 Enriching Discover content with runtime + trailers...")
+    _enrich_discover_details()
     
     # FLOW 2: WATCH NOW (With reviews & scoring — async pipeline)
     print("\n📺 STARTING WATCH NOW FLOW...")
