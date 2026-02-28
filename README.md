@@ -56,7 +56,7 @@ Copy any title to clipboard with one tap and search on your LG TV remote. Design
 | Prime Video India | Subscription |
 | JioHotstar | Subscription |
 | Apple TV+ | Subscription |
-| JioCinema | Free + Premium |
+
 
 ---
 
@@ -114,6 +114,7 @@ TMDB_API_KEY=
 YOUTUBE_API_KEY=
 GEMINI_API_KEY=
 OMDB_API_KEY=
+GROK_API_KEY=
 ```
 
 ---
@@ -142,7 +143,7 @@ The dashboard and data pipeline code is in this repo.
 
 ## Keywords
 
-streaming tracker india · what to watch netflix india · prime video india recommendations · jiohotstar best shows · hindi dub filter ott · best movies streaming india 2025 · ott tracker india · bollywood streaming · indian web series recommendations · what to watch tonight india
+streaming tracker india · what to watch netflix india · prime video india recommendations · jiohotstar best shows · hindi dub filter ott · best movies streaming india 2026 · ott tracker india · bollywood streaming · indian web series recommendations · what to watch tonight india
 
 ---
 
