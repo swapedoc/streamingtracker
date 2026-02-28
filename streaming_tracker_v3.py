@@ -3624,29 +3624,6 @@ def main():
         jw.run()           # Watch Now — fetches links for 'content' table
         jw.run_discover()  # Discover — fetches links for 'discover_content' table
 
-    # ── Auto-fetch Hindi dubs for any new/untagged titles ─────────────────
-    print("\n" + "="*70)
-    print("🎙 HINDI DUB CHECK — tagging new titles...")
-    print("="*70)
-    try:
-        from fetch_hindi_dubs import process_table
-        db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        for table in ['content', 'discover_content']:
-            print(f"\n  Checking {table}...")
-            all_rows = []
-            for start in range(0, 50000, 1000):
-                page = db.table(table).select('id, title, content_type, hindi_dub').range(start, start + 999).execute()
-                if not page.data:
-                    break
-                all_rows.extend(page.data)
-                if len(page.data) < 1000:
-                    break
-            if all_rows:
-                f, nf, e, s = process_table(db, table, all_rows)
-                print(f"  ✅ Found: {f}  ✗ None: {nf}  ⏭ Skipped: {s}  ⚠️ Errors: {e}")
-    except Exception as e:
-        print(f"  ⚠️  Hindi dub check failed (non-fatal): {e}")
-
     print("\n" + "="*70)
     print("🎉 BOTH FLOWS COMPLETE!")
     print("="*70)

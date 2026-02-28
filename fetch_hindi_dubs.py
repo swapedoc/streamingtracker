@@ -29,7 +29,7 @@ SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 GQL          = 'https://apis.justwatch.com/graphql'
 
-MAX_WORKERS = 50
+MAX_WORKERS = 20
 
 # ── GraphQL Queries ──────────────────────────────────────────────────────────
 
@@ -75,26 +75,40 @@ def _get_session():
     if not hasattr(_thread_local, 'session'):
         s = requests.Session()
         s.headers.update({
-            'User-Agent':   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-            'Content-Type': 'application/json',
-            'Origin':       'https://www.justwatch.com',
-            'Referer':      'https://www.justwatch.com/',
+            'User-Agent':      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Content-Type':    'application/json',
+            'Accept':          'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Origin':          'https://www.justwatch.com',
+            'Referer':         'https://www.justwatch.com/',
+            'sec-ch-ua':       '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            'sec-ch-ua-mobile':   '?0',
+            'sec-ch-ua-platform': '"macOS"',
+            'Sec-Fetch-Dest':  'empty',
+            'Sec-Fetch-Mode':  'cors',
+            'Sec-Fetch-Site':  'same-site',
         })
         _thread_local.session = s
     return _thread_local.session
 
 
-def gql(query, variables):
-    try:
-        r = _get_session().post(GQL, json={'query': query, 'variables': variables}, timeout=15)
-        if r.status_code != 200:
+def gql(query, variables, retries=3):
+    for attempt in range(retries):
+        try:
+            r = _get_session().post(GQL, json={'query': query, 'variables': variables}, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                if 'errors' in data:
+                    return None
+                return data
+            if attempt < retries - 1:
+                continue
             return None
-        data = r.json()
-        if 'errors' in data:
-            return None
-        return data
-    except Exception:
-        return None
+        except Exception:
+            if attempt == retries - 1:
+                return None
+    return None
 
 
 # ── Live progress bar ────────────────────────────────────────────────────────
@@ -265,6 +279,28 @@ def process_table(db, table_name, rows, max_workers=MAX_WORKERS):
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+def fetch_all_rows(db, table_name):
+    """Fetch ALL rows from a Supabase table using pagination (bypasses 1000-row limit)."""
+    all_rows = []
+    page_size = 1000
+    offset = 0
+    while True:
+        result = (
+            db.table(table_name)
+            .select('id, title, content_type, hindi_dub')
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        batch = result.data or []
+        all_rows.extend(batch)
+        print(f'  📄 Fetched {len(all_rows)} rows so far...', end='\r')
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    print(f'  📄 Total fetched: {len(all_rows)} rows{" " * 20}')
+    return all_rows
+
+
 def main():
     if not SUPABASE_URL or not SUPABASE_KEY:
         print('❌ Missing SUPABASE_URL or SUPABASE_KEY in .env')
@@ -280,11 +316,11 @@ def main():
     # ── Watch Now ─────────────────────────────────────────────────────────────
     print('📺 Processing WATCH NOW (content table)...')
     print('-'*65)
-    rows = db.table('content').select('id, title, content_type, hindi_dub').execute()
-    if not rows.data:
+    rows = fetch_all_rows(db, 'content')
+    if not rows:
         print('   No rows found.')
     else:
-        f, nf, e, s = process_table(db, 'content', rows.data)
+        f, nf, e, s = process_table(db, 'content', rows)
         print(f'   ✅ Hindi dub found: {f}')
         print(f'   ✗  No hindi dub:   {nf}')
         print(f'   ⏭  Already tagged: {s}')
@@ -295,11 +331,11 @@ def main():
     # ── Discover ──────────────────────────────────────────────────────────────
     print('🔍 Processing DISCOVER (discover_content table)...')
     print('-'*65)
-    rows2 = db.table('discover_content').select('id, title, content_type, hindi_dub').execute()
-    if not rows2.data:
+    rows2 = fetch_all_rows(db, 'discover_content')
+    if not rows2:
         print('   No rows found.')
     else:
-        f2, nf2, e2, s2 = process_table(db, 'discover_content', rows2.data)
+        f2, nf2, e2, s2 = process_table(db, 'discover_content', rows2)
         print(f'   ✅ Hindi dub found: {f2}')
         print(f'   ✗  No hindi dub:   {nf2}')
         print(f'   ⏭  Already tagged: {s2}')
