@@ -926,6 +926,7 @@ class DiscoverFlow:
                 'genre':           item.get('genre'),
                 'tv_genre':        item.get('tv_genre'),
                 'popularity':      item['popularity'],
+                'source':          'tracker',
             })
 
         BATCH = 100
@@ -960,11 +961,12 @@ class DiscoverFlow:
                 print("   ⚠️  Fetch returned very few titles — skipping stale cleanup as safety measure")
             else:
                 existing = self.db.table('discover_content') \
-                    .select('id, tmdb_id, platform').execute().data or []
+                    .select('id, tmdb_id, platform, source').execute().data or []
 
                 stale_ids = [
                     row['id'] for row in existing
                     if (row['tmdb_id'], row['platform']) not in fresh_keys
+                    and row.get('source', 'tracker') == 'tracker'  # never delete bulk catalog rows
                 ]
 
                 if not stale_ids:
@@ -3339,27 +3341,80 @@ class JustWatchFetcher:
         return None
 
     def _fetch_and_update(self, rows, table_name):
-        """Shared logic: fetch JustWatch URLs for a list of rows and update the given table."""
+        """Fetch JustWatch URLs concurrently and update the table."""
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         updated = 0
-        for item in rows:
+        lock = threading.Lock()
+        _local = threading.local()
+
+        def get_session():
+            if not hasattr(_local, 'session'):
+                import requests as _req
+                s = _req.Session()
+                s.headers.update({
+                    'User-Agent':   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                    'Content-Type': 'application/json',
+                    'Origin':       'https://www.justwatch.com',
+                    'Referer':      'https://www.justwatch.com/',
+                })
+                _local.session = s
+            return _local.session
+
+        def _gql_local(query, variables):
+            try:
+                r = get_session().post(self.GQL, json={'query': query, 'variables': variables}, timeout=12)
+                if r.status_code != 200: return None
+                data = r.json()
+                if 'errors' in data: return None
+                return data
+            except Exception:
+                return None
+
+        def find_url(item):
             title      = item['title']
             media_type = item['content_type']
             platform   = item['platform']
+            data = _gql_local(self.SEARCH_Q, {'searchQuery': title, 'country': 'IN', 'first': 8})
+            if not data: return item, None
+            edges = data.get('data', {}).get('popularTitles', {}).get('edges', [])
+            want = 'Movie' if media_type != 'tv' else 'Show'
+            candidates = [e['node']['id'] for e in edges if e['node'].get('__typename') == want]
+            fallback   = [e['node']['id'] for e in edges if e['node'].get('__typename') != want]
+            for node_id in candidates + fallback:
+                od = _gql_local(self.OFFERS_Q, {'nodeId': node_id, 'country': 'IN'})
+                if not od: continue
+                offers = (od.get('data', {}).get('node') or {}).get('offers', [])
+                seen = set()
+                for offer in offers:
+                    short = offer.get('package', {}).get('shortName', '')
+                    plat  = self.PLATFORM_MAP.get(short)
+                    url   = offer.get('standardWebURL', '')
+                    if plat == platform and url and plat not in seen:
+                        return item, url
+                    seen.add(plat)
+            return item, None
 
-            url = self._find_stream_url(title, media_type, platform)
-            if not url:
-                print(f"   ⚡️ {title[:40]} — not found on JustWatch")
-                time.sleep(0.3)
-                continue
-
-            try:
-                self.db.table(table_name).update({'stream_url': url}).eq('id', item['id']).execute()
-                print(f"   ✅ {title[:38]:<38} → {url[:56]}")
-                updated += 1
-            except Exception as e:
-                print(f"   ❌ DB: {str(e)[:60]}")
-
-            time.sleep(0.4)
+        MAX_JW_WORKERS = 20  # conservative — avoids JustWatch throttling
+        with ThreadPoolExecutor(max_workers=MAX_JW_WORKERS) as executor:
+            futures = {executor.submit(find_url, item): item for item in rows}
+            done = 0
+            for future in as_completed(futures):
+                done += 1
+                item, url = future.result()
+                title = item['title']
+                if not url:
+                    if done % 50 == 0:
+                        print(f"   ⏳ {done}/{len(rows)} processed...")
+                    continue
+                try:
+                    self.db.table(table_name).update({'stream_url': url}).eq('id', item['id']).execute()
+                    with lock:
+                        updated += 1
+                    print(f"   ✅ {title[:38]:<38} → {url[:56]}")
+                except Exception as e:
+                    print(f"   ❌ DB: {str(e)[:60]}")
 
         return updated
 
@@ -3381,7 +3436,20 @@ class JustWatchFetcher:
         print("🔗 FETCHING DIRECT STREAMING LINKS — Discover (JustWatch)")
         print("="*70)
 
-        rows = self.db.table('discover_content').select('id, title, content_type, platform, stream_url').execute()
+        # Paginate to bypass Supabase 1000 row default limit
+        all_data = []
+        for start in range(0, 10000, 1000):
+            page = self.db.table('discover_content').select('id, title, content_type, platform, stream_url').range(start, start + 999).execute()
+            if not page.data:
+                break
+            all_data.extend(page.data)
+            if len(page.data) < 1000:
+                break
+
+        class _R:
+            data = all_data
+        rows = _R()
+
         if not rows.data:
             print("⚡️ No Discover content found")
             return
@@ -3466,6 +3534,8 @@ def main():
                         help='Disable RT critic scraper')
     parser.add_argument('--llm-sentiment', action='store_true',
                         help='Use Groq/Gemini sentiment (slower, marginal gain)')
+    parser.add_argument('--discover-only', action='store_true',
+                        help='Skip Watch Now flow — only run Discover + stream URL fetch')
     args, _ = parser.parse_known_args()
 
     if args.no_reddit:
@@ -3531,16 +3601,21 @@ def main():
     _enrich_discover_details()
     
     # FLOW 2: WATCH NOW (With reviews & scoring — async pipeline)
-    print("\n📺 STARTING WATCH NOW FLOW...")
-    ingester = AsyncWatchNowPipeline()
-    ingester.run()
-    
-    computer = ScoreComputer()
-    computer.compute_all()
+    if args.discover_only:
+        print("\n⏭️  Skipping Watch Now flow (--discover-only)")
+        jw = JustWatchFetcher()
+        jw.run_discover()  # Discover — fetches links for 'discover_content' table
+    else:
+        print("\n📺 STARTING WATCH NOW FLOW...")
+        ingester = AsyncWatchNowPipeline()
+        ingester.run()
 
-    jw = JustWatchFetcher()
-    jw.run()           # Watch Now — fetches links for 'content' table
-    jw.run_discover()  # Discover — fetches links for 'discover_content' table
+        computer = ScoreComputer()
+        computer.compute_all()
+
+        jw = JustWatchFetcher()
+        jw.run()           # Watch Now — fetches links for 'content' table
+        jw.run_discover()  # Discover — fetches links for 'discover_content' table
 
     # ── Auto-fetch Hindi dubs for any new/untagged titles ─────────────────
     print("\n" + "="*70)

@@ -605,7 +605,15 @@ def load_all_data():
     try:
         db = create_client(url, key)
         sr = db.table('scores').select('*, content(*)').order('final_score', desc=True).execute()
-        dr = db.table('discover_content').select('*').order('popularity', desc=True).execute()
+        # Supabase caps at 1000 rows by default — fetch in two pages
+        dr1 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(0, 999).execute()
+        dr2 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(1000, 1999).execute()
+        dr3 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(2000, 2999).execute()
+        dr4 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(3000, 3999).execute()
+        dr5 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(4000, 4999).execute()
+        class _DR:
+            data = (dr1.data or []) + (dr2.data or []) + (dr3.data or []) + (dr4.data or []) + (dr5.data or [])
+        dr = _DR()
         watch = []
         for row in (sr.data or []):
             c = row.pop('content', {}) or {}
@@ -682,7 +690,7 @@ def to_js(data, disc=False):
             out.append({'title': safe(r.get('title')), 'platform': safe(r.get('platform')),
                 'type': safe(r.get('content_type')), 'year': safe(r.get('release_year')),
                 'rating': float(rating or 0), 'poster': safe(r.get('poster_path')),
-                'overview': safe(r.get('overview',''))[:280], 'category': safe(r.get('category')),
+                'category': safe(r.get('category')),
                 'genre': safe(r.get('genre', '')),
                 'tv_genre': safe(r.get('tv_genre', '')),
                 'tmdb_id': safe(r.get('tmdb_id')),
@@ -1934,7 +1942,7 @@ const CC = {
   'genre_romance':  '#FF9EAA',
 };
 const CL = {
-  'classics': 'Classic', 'underdog': 'Gem', 'indian': 'Hindi',
+  'classics': 'Classic', 'underdog': 'Gem', 'indian': 'Indian',
   'genre_action': 'Action', 'genre_thriller': 'Thriller',
   'genre_horror': 'Horror', 'genre_comedy': 'Comedy',
   'genre_drama': 'Drama', 'genre_sci-fi': 'Sci-Fi', 'genre_romance': 'Romance',
@@ -1977,7 +1985,7 @@ function renderDiscPills() {
     <button class="pill${dCat==='all'?' on':''}" data-c="all" onclick="sC('all',this)">All</button>
     <button class="pill${dCat==='classics'?' on':''}" data-c="classics" onclick="sC('classics',this)">Classics</button>
     <button class="pill${dCat==='underdog'?' on':''}" data-c="underdog" onclick="sC('underdog',this)">Hidden Gems</button>
-    <button class="pill${dCat==='indian'?' on':''}" data-c="indian" onclick="sC('indian',this)">Hindi</button>
+    <button class="pill${dCat==='indian'?' on':''}" data-c="indian" onclick="sC('indian',this)">Indian</button>
     <div class="ctrl-sep"></div>`;
 
   let genrePills = '';
@@ -2193,7 +2201,7 @@ function renderStats(data, elId, isDisc) {
       { n: data.length,         l: 'Titles',      c: '#F5F5F0', fn: "sC('all',null);setSribActive('ds',0)"       },
       { n: cats['classics']||0, l: 'Classics',    c: '#E8C547', fn: "sC('classics',null);setSribActive('ds',1)"  },
       { n: cats['underdog']||0, l: 'Hidden Gems', c: '#4DBFFF', fn: "sC('underdog',null);setSribActive('ds',2)"  },
-      { n: cats['indian']||0,   l: 'Hindi',       c: '#FF7043', fn: "sC('indian',null);setSribActive('ds',3)"    },
+      { n: cats['indian']||0,   l: 'Indian',      c: '#FF7043', fn: "sC('indian',null);setSribActive('ds',3)"    },
       { n: genres,              l: 'Genre Picks', c: '#B88EFF', fn: "dCat='genre_picks';document.querySelectorAll('[data-c]').forEach(x=>x.classList.remove('on'));renderDisc();setSribActive('ds',4);"},
     ];
   }

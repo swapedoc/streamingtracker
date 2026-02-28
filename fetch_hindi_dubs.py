@@ -29,7 +29,7 @@ SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 GQL          = 'https://apis.justwatch.com/graphql'
 
-MAX_WORKERS = 25
+MAX_WORKERS = 50
 
 # ── GraphQL Queries ──────────────────────────────────────────────────────────
 
