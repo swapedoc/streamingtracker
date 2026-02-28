@@ -820,7 +820,10 @@ body::after {
 * { cursor: none !important; }
 /* restore pointer for trailer button and panel action buttons */
 #pp-trailer-btn, .panel-watch-btn, .panel-link, .panel-close-btn,
-.tv-send-btn, .jw-link { cursor: pointer !important; }
+.tv-send-btn, .jw-link,
+#tg-modal, #tg-modal-box, #tg-chat-input, #tg-confirm-btn, #tg-cancel-btn,
+#tg-modal a, .wl-remove-btn, .wl-add-btn { cursor: pointer !important; }
+#tg-chat-input { cursor: text !important; }
 #cursor {
   position: fixed; z-index: 9999; pointer-events: none;
   width: 6px; height: 6px; border-radius: 50%;
@@ -1535,6 +1538,54 @@ body:has(.dc:hover) #cursor-ring {
 }
 .panel-track-btn .track-icon { font-size: 0.85rem; }
 
+/* ── WATCHLIST TAB ── */
+.wl-add-btn {
+  padding: 10px 20px; background: #E8C547; border: none; border-radius: 4px;
+  color: #07070A; font-family: var(--mono); font-size: 0.7rem; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
+  white-space: nowrap; transition: background .2s; flex-shrink: 0;
+}
+.wl-add-btn:hover { background: #f0d060; }
+
+#wl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px; padding: 20px 0;
+}
+.wl-card {
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px; padding: 16px 18px;
+  display: flex; align-items: center; gap: 14px;
+  transition: border-color .2s;
+}
+.wl-card:hover { border-color: rgba(232,197,71,0.3); }
+.wl-poster {
+  width: 44px; height: 64px; object-fit: cover; border-radius: 4px;
+  background: rgba(255,255,255,0.05); flex-shrink: 0;
+}
+.wl-poster-ph {
+  width: 44px; height: 64px; border-radius: 4px;
+  background: rgba(255,255,255,0.05); display: flex;
+  align-items: center; justify-content: center;
+  font-size: 1.2rem; flex-shrink: 0;
+}
+.wl-info { flex: 1; min-width: 0; }
+.wl-title {
+  color: #fff; font-size: 0.85rem; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+.wl-meta { color: #666; font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.08em; }
+.wl-status-streaming { color: #4CAF50; }
+.wl-status-waiting   { color: #E8C547; }
+.wl-remove-btn {
+  background: transparent; border: 1px solid rgba(255,68,85,0.25);
+  color: #FF4455; font-family: var(--mono); font-size: 0.6rem;
+  letter-spacing: 0.08em; padding: 5px 10px; border-radius: 4px;
+  cursor: pointer; flex-shrink: 0; transition: all .2s;
+}
+.wl-remove-btn:hover { background: rgba(255,68,85,0.1); border-color: #FF4455; }
+
 /* ═══════════════════════════════════════════════════
    DISCOVER GRID
 ═══════════════════════════════════════════════════ */
@@ -1875,6 +1926,8 @@ body:has(.dc:hover) #cursor-ring {
   <button class="tab on" onclick="showTab('watch',this)">Watch Now</button>
   <div class="tab-sep"></div>
   <button class="tab" onclick="showTab('disc',this)">Discover</button>
+  <div class="tab-sep"></div>
+  <button class="tab" onclick="showTab('wl',this)">🔔 Watchlist</button>
 
   <div class="tabs-frames">
     <div class="frame-holes">
@@ -1943,6 +1996,34 @@ body:has(.dc:hover) #cursor-ring {
     </div>
   </div>
   <div class="disc-grid" id="dg"></div>
+</div>
+
+<!-- ── WATCHLIST TAB ── -->
+<div id="tab-wl" style="display:none">
+  <div class="ctrl" style="align-items:center;gap:16px;flex-wrap:wrap">
+    <div style="color:var(--gold);font-family:var(--mono);font-size:0.7rem;letter-spacing:0.12em;text-transform:uppercase">
+      🔔 Track any movie or series — get a Telegram alert when it hits a streaming service
+    </div>
+  </div>
+
+  <!-- Search + Add -->
+  <div class="ctrl" style="gap:10px;flex-wrap:nowrap">
+    <div class="search-wrap" style="flex:1">
+      <span class="search-icon">↳</span>
+      <input class="search" id="wl-search-input"
+        placeholder="Type a movie or series name…"
+        oninput="wlSearchFilter(this.value)"
+        autocomplete="off" spellcheck="false"/>
+    </div>
+    <button class="wl-add-btn" onclick="wlAddNew()">+ Track New Title</button>
+  </div>
+
+  <!-- Tracked list -->
+  <div id="wl-grid"></div>
+  <div id="wl-empty" style="display:none" class="empty">
+    You haven't tracked anything yet.<br>
+    <span style="color:#888;font-size:0.8rem">Type a title above and hit "+ Track New Title" to get started.</span>
+  </div>
 </div>
 
 </div><!-- #app -->
@@ -2680,11 +2761,13 @@ function dSr(v)  { dSearch=v; renderDisc(); }
 
 /* ── TAB SWITCH ── */
 function showTab(t, btn) {
-  document.getElementById('tab-watch').style.display  = t==='watch' ? '' : 'none';
-  document.getElementById('tab-disc').style.display   = t==='disc'  ? '' : 'none';
-    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b===btn));
-  if (t==='disc')  renderDisc();
-  }
+  document.getElementById('tab-watch').style.display = t==='watch' ? '' : 'none';
+  document.getElementById('tab-disc').style.display  = t==='disc'  ? '' : 'none';
+  document.getElementById('tab-wl').style.display    = t==='wl'    ? '' : 'none';
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b===btn));
+  if (t==='disc') renderDisc();
+  if (t==='wl')   renderWatchlist();
+}
 
 
 /* ── INIT ── */
@@ -2806,6 +2889,112 @@ function wPolar() {
   renderWatch();
 }
 
+/* ── WATCHLIST TAB LOGIC ── */
+
+let _wlRows = [];       // full list fetched from Supabase
+let _wlFilter = '';     // current search filter string
+
+async function renderWatchlist() {
+  const grid  = document.getElementById('wl-grid');
+  const empty = document.getElementById('wl-empty');
+  if (!grid) return;
+
+  grid.innerHTML = '<div style="color:#666;font-family:var(--mono);font-size:0.7rem;padding:20px 0">Loading…</div>';
+
+  if (!SUPA_URL || !SUPA_ANON) {
+    grid.innerHTML = '<div class="empty">Supabase not configured.</div>';
+    return;
+  }
+
+  const bid = getBrowserId();
+  try {
+    const r = await fetch(
+      `${SUPA_URL}/rest/v1/watchlist?browser_id=eq.${encodeURIComponent(bid)}&select=*&order=added_at.desc`,
+      { headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON } }
+    );
+    _wlRows = r.ok ? (await r.json()) : [];
+  } catch { _wlRows = []; }
+
+  _renderWlGrid();
+}
+
+function _renderWlGrid() {
+  const grid  = document.getElementById('wl-grid');
+  const empty = document.getElementById('wl-empty');
+  if (!grid) return;
+
+  const q = _wlFilter.toLowerCase().trim();
+  const rows = q ? _wlRows.filter(r => r.title.toLowerCase().includes(q)) : _wlRows;
+
+  if (!rows.length) {
+    grid.innerHTML = '';
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  grid.innerHTML = rows.map(r => {
+    const poster = r.poster
+      ? `<img class="wl-poster" src="https://image.tmdb.org/t/p/w92${r.poster}" alt=""/>`
+      : `<div class="wl-poster-ph">🎬</div>`;
+    const streaming = r.platform && r.stream_url;
+    const statusHtml = streaming
+      ? `<div class="wl-meta wl-status-streaming">✅ On ${r.platform}</div>`
+      : `<div class="wl-meta wl-status-waiting">⏳ Waiting for streaming</div>`;
+    const tgHtml = r.telegram_chat_id
+      ? `<div class="wl-meta" style="margin-top:2px">🔔 Alert set</div>`
+      : `<div class="wl-meta" style="margin-top:2px;color:#555">No alert</div>`;
+    const typeLabel = r.content_type === 'tv' ? 'Series' : 'Film';
+    return `
+      <div class="wl-card">
+        ${poster}
+        <div class="wl-info">
+          <div class="wl-title">${r.title}</div>
+          <div class="wl-meta">${typeLabel}</div>
+          ${statusHtml}
+          ${tgHtml}
+        </div>
+        <button class="wl-remove-btn" onclick="wlRemove('${r.title.replace(/'/g,"\\'")}', this)">✕ Remove</button>
+      </div>`;
+  }).join('');
+}
+
+function wlSearchFilter(val) {
+  _wlFilter = val;
+  _renderWlGrid();
+}
+
+async function wlRemove(title, btn) {
+  btn.textContent = '…';
+  btn.disabled = true;
+  const bid = getBrowserId();
+  try {
+    const r = await fetch(
+      `${SUPA_URL}/rest/v1/watchlist?browser_id=eq.${encodeURIComponent(bid)}&title=eq.${encodeURIComponent(title)}`,
+      { method: 'DELETE', headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON,
+          'Content-Type': 'application/json', Prefer: 'return=minimal' } }
+    );
+    if (r.ok) {
+      _wlRows = _wlRows.filter(x => x.title !== title);
+      if (_trackedTitles) _trackedTitles.delete(title);
+      _renderWlGrid();
+      showToast('🗑', `"${title}" removed`, 2000);
+    }
+  } catch { btn.textContent = '✕ Remove'; btn.disabled = false; }
+}
+
+function wlAddNew() {
+  const input = document.getElementById('wl-search-input');
+  const title = (input ? input.value : '').trim();
+  if (!title) { showToast('⚠️', 'Type a title first', 2000); return; }
+  // Reuse the same modal flow — fake a minimal data object
+  currentPanelData = { title, type: 'movie', tmdb_id: '', poster: '', platform: null, stream_url: null, score: null };
+  _openTrackModal(currentPanelData);
+}
+
+// After successful track from modal, refresh watchlist tab if it's open
+const _origConfirmTrack = _confirmTrack;
+
 /* ── WATCHLIST ── */
 
 const SUPA_URL  = '__SUPA_URL__';
@@ -2879,7 +3068,8 @@ function _injectTrackModal() {
     #tg-modal {
       position:fixed;inset:0;z-index:99999;
       background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);
-      display:flex;align-items:center;justify-content:center;
+      display:flex;align-items:flex-start;justify-content:center;
+      padding-top:120px;
     }
     #tg-modal-box {
       background:#0e0e12;border:1px solid rgba(232,197,71,0.3);
@@ -2973,6 +3163,15 @@ async function _confirmTrack() {
       if (btn)   btn.classList.add('tracked');
       if (label) label.textContent = 'Tracked ✓';
       showToast('✅', `Tracking "${d.title}" — Telegram alert set 🔔`, 3500);
+      // Refresh watchlist tab if it's visible
+      if (document.getElementById('tab-wl') && document.getElementById('tab-wl').style.display !== 'none') {
+        renderWatchlist();
+      } else {
+        // Add optimistically to local cache so it shows immediately when tab is opened
+        _wlRows.unshift({ title: d.title, content_type: d.type||'movie', poster: d.poster||'',
+          platform: d.platform||null, stream_url: d.stream_url||null,
+          telegram_chat_id: raw, added_at: new Date().toISOString() });
+      }
     } else {
       errEl.textContent = 'Could not save — try again';
     }
