@@ -604,7 +604,7 @@ def load_all_data():
     if not url or not key: return None, None, "No credentials"
     try:
         db = create_client(url, key)
-        sr = db.table('scores').select('*, content(*)').order('final_score', desc=True).execute()
+        sr = db.table('scores').select('*, content(*), vibe_score, vibe_label').order('final_score', desc=True).execute()
         # Supabase caps at 1000 rows by default — fetch in two pages
         COLS = 'id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime'
         all_discover = []
@@ -634,6 +634,8 @@ def load_all_data():
                 'trailer_id': c.get('trailer_id') or '',
                 'genre': c.get('genre') or '',
                 'tv_genre': c.get('tv_genre') or '',
+                'vibe_score': row.get('vibe_score'),
+                'vibe_label': row.get('vibe_label') or '',
             })
         return watch, dr.data or [], None
     except Exception as e:
@@ -717,12 +719,18 @@ def to_js(data, disc=False):
                 'binge': binge,
                 'trailer_id': safe(r.get('trailer_id', '')),
                 'genre': safe(r.get('genre', '')),
-                'tv_genre': safe(r.get('tv_genre', ''))})
+                'tv_genre': safe(r.get('tv_genre', '')),
+                'vibe_score': float(r['vibe_score']) if r.get('vibe_score') is not None else None,
+                'vibe_label': safe(r.get('vibe_label', ''))})
     return json.dumps(out)
 
 WJ = to_js(watch_data)
 DJ = to_js(discover_data, disc=True)
 TS = datetime.now().strftime('%d %b %Y · %H:%M')
+
+# ── Watchlist: inject Supabase public (anon) key into frontend ──────────────
+SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY', '')
+SUPABASE_URL_PUB  = os.getenv('SUPABASE_URL', '')
 
 
 HTML = r"""<!DOCTYPE html>
@@ -1256,6 +1264,23 @@ body:has(.dc:hover) #cursor-ring {
   opacity: 0.75;
 }
 
+.card-vibe {
+  font-family: var(--mono); font-size: 0.48rem;
+  letter-spacing: 0.08em; margin-bottom: 6px;
+  display: flex; align-items: center; gap: 5px;
+}
+.card-vibe-bar {
+  flex: 1; height: 2px; background: var(--v3);
+  border-radius: 1px; overflow: hidden; max-width: 50px;
+}
+.card-vibe-fill {
+  height: 100%; border-radius: 1px;
+  transition: width 1s var(--ease);
+}
+.card-vibe-val {
+  font-size: 0.5rem; opacity: 0.9; white-space: nowrap;
+}
+
 /* score bar — thin golden line */
 .score-line {
   height: 1px; background: var(--v3);
@@ -1494,6 +1519,21 @@ body:has(.dc:hover) #cursor-ring {
   font-weight: 700; transition: opacity 0.2s;
 }
 .panel-watch-btn:hover { opacity: 0.8; }
+
+.panel-track-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 18px; border-radius: 4px; font-size: 0.7rem;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  font-family: var(--mono); cursor: pointer;
+  background: transparent;
+  border: 1px solid rgba(232,197,71,0.4);
+  color: #E8C547; transition: all .2s;
+}
+.panel-track-btn:hover { background: rgba(232,197,71,0.1); border-color: #E8C547; }
+.panel-track-btn.tracked {
+  background: rgba(232,197,71,0.15); border-color: #E8C547; color: #E8C547;
+}
+.panel-track-btn .track-icon { font-size: 0.85rem; }
 
 /* ═══════════════════════════════════════════════════
    DISCOVER GRID
@@ -2252,6 +2292,15 @@ function makeCard(d, i, wIdx) {
       ${d.genre ? `<span class="card-genre" style="color:${GC[d.genre]||'#888'}">${d.genre}</span>` : ''}
     </div>
     ${d.binge ? `<div class="card-binge">⏱ ${d.binge}${d.trailer_id ? ' · <span style="color:var(--gold);opacity:.7">▶ Trailer</span>' : ''}</div>` : (d.trailer_id ? `<div class="card-binge" style="color:var(--gold);opacity:.7">▶ Trailer available</div>` : '')}
+    ${d.vibe_score != null ? (() => {
+      const vibeCol = d.vibe_score >= 8 ? '#FF4040' : d.vibe_score >= 6 ? '#E8C547' : '#4DBFFF';
+      const vibePct = (d.vibe_score / 10) * 100;
+      return `<div class="card-vibe" style="color:${vibeCol}">
+        <span>${d.vibe_label || 'Vibe'}</span>
+        <div class="card-vibe-bar"><div class="card-vibe-fill" style="width:${vibePct}%;background:${vibeCol};box-shadow:0 0 4px ${vibeCol}"></div></div>
+        <span class="card-vibe-val">${d.vibe_score.toFixed(1)}</span>
+      </div>`;
+    })() : ''}
     <div class="score-line">
       <div class="score-line-fill" style="width:${pct}%;background:${col};box-shadow:0 0 8px ${col}"></div>
     </div>
@@ -2349,6 +2398,10 @@ function openPanel(d, clickedEl) {
         <div class="pm-item">Reviews<span>${d.reviews}</span></div>
         ${d.genre ? `<div class="pm-item">Genre<span style="color:${GC[d.genre]||'#888'}">${d.genre}</span></div>` : ''}
         ${d.binge ? `<div class="pm-item">Runtime<span>${d.binge}</span></div>` : ''}
+        ${d.vibe_score != null ? (() => {
+          const vibeCol = d.vibe_score >= 8 ? '#FF4040' : d.vibe_score >= 6 ? '#E8C547' : '#4DBFFF';
+          return `<div class="pm-item">${d.vibe_label||'Vibe'}<span style="color:${vibeCol}">${d.vibe_score.toFixed(1)}/10</span></div>`;
+        })() : ''}
       </div>
       <div class="panel-score-section">
         <div class="panel-big-score" style="color:${col};text-shadow:0 0 80px ${colA}">${d.score.toFixed(0)}</div>
@@ -2405,6 +2458,11 @@ function openPanel(d, clickedEl) {
                style="background:${c.bg};color:${c.fg}">&#9654; Watch on ${d.platform}</a>`;
         })() : ''}
         ${tmdb ? `<a class="panel-link" href="${tmdb}" target="_blank">View on TMDb →</a>` : ''}
+        <button class="panel-track-btn" id="pp-track-btn"
+          onclick="toggleTrack(currentPanelData)">
+          <span class="track-icon">🔔</span>
+          <span id="pp-track-label">Track</span>
+        </button>
       </div>
     </div>`;
 
@@ -2412,6 +2470,10 @@ function openPanel(d, clickedEl) {
   document.getElementById('pp-plat').textContent    = d.platform || '';
   document.getElementById('pp-title').textContent   = d.title    || '';
   document.getElementById('pp-overview').textContent = d.overview || '';
+
+  // Store for Track button
+  currentPanelData = d;
+  _updateTrackBtn(d.title);
 
   const panelEl = document.getElementById('panel');
   const overlayEl = document.getElementById('overlay');
@@ -2744,6 +2806,119 @@ function wPolar() {
   renderWatch();
 }
 
+/* ── WATCHLIST ── */
+
+const SUPA_URL  = '__SUPA_URL__';
+const SUPA_ANON = '__SUPA_ANON__';
+
+// Each browser gets a stable UUID stored in localStorage
+function getBrowserId() {
+  let bid = localStorage.getItem('streamiq_bid');
+  if (!bid) {
+    bid = 'bid_' + crypto.randomUUID();
+    localStorage.setItem('streamiq_bid', bid);
+  }
+  return bid;
+}
+
+// In-memory cache of tracked titles for this session
+let _trackedTitles = null;   // Set of titles
+let currentPanelData = null;
+
+async function _fetchTracked() {
+  if (!SUPA_URL || !SUPA_ANON) return new Set();
+  const bid = getBrowserId();
+  try {
+    const r = await fetch(
+      `${SUPA_URL}/rest/v1/watchlist?browser_id=eq.${encodeURIComponent(bid)}&select=title`,
+      { headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON } }
+    );
+    if (!r.ok) return new Set();
+    const rows = await r.json();
+    return new Set(rows.map(x => x.title));
+  } catch { return new Set(); }
+}
+
+async function getTracked() {
+  if (!_trackedTitles) _trackedTitles = await _fetchTracked();
+  return _trackedTitles;
+}
+
+function _updateTrackBtn(title) {
+  const btn   = document.getElementById('pp-track-btn');
+  const label = document.getElementById('pp-track-label');
+  if (!btn || !label) return;
+  getTracked().then(set => {
+    const on = set.has(title);
+    btn.classList.toggle('tracked', on);
+    label.textContent = on ? 'Tracked ✓' : 'Track';
+  });
+}
+
+async function toggleTrack(d) {
+  if (!d) return;
+  if (!SUPA_URL || !SUPA_ANON) {
+    showToast('⚠️', 'Supabase anon key not configured', 3000);
+    return;
+  }
+  const bid   = getBrowserId();
+  const set   = await getTracked();
+  const title = d.title;
+  const btn   = document.getElementById('pp-track-btn');
+  const label = document.getElementById('pp-track-label');
+
+  if (set.has(title)) {
+    // Untrack — DELETE row
+    try {
+      const r = await fetch(
+        `${SUPA_URL}/rest/v1/watchlist?browser_id=eq.${encodeURIComponent(bid)}&title=eq.${encodeURIComponent(title)}`,
+        { method: 'DELETE',
+          headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON,
+                     'Content-Type': 'application/json', Prefer: 'return=minimal' } }
+      );
+      if (r.ok) {
+        set.delete(title);
+        btn.classList.remove('tracked');
+        label.textContent = 'Track';
+        showToast('🔕', `"${title}" removed from watchlist`, 2500);
+      }
+    } catch(e) { showToast('❌', 'Error removing from watchlist', 3000); }
+  } else {
+    // Track — INSERT row
+    const payload = {
+      browser_id:   bid,
+      title:        title,
+      content_type: d.type || 'movie',
+      tmdb_id:      String(d.tmdb_id || ''),
+      poster:       d.poster || '',
+      platform:     d.platform || null,
+      stream_url:   d.stream_url || null,
+      score:        d.score || null,
+    };
+    try {
+      const r = await fetch(
+        `${SUPA_URL}/rest/v1/watchlist`,
+        { method: 'POST',
+          headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON,
+                     'Content-Type': 'application/json', Prefer: 'return=minimal' } ,
+          body: JSON.stringify(payload) }
+      );
+      if (r.ok || r.status === 409) {  // 409 = already exists (unique constraint)
+        set.add(title);
+        btn.classList.add('tracked');
+        label.textContent = 'Tracked ✓';
+        const isDiscover = !d.stream_url;
+        const msg = isDiscover
+          ? `Tracking "${title}" — you'll get a Telegram alert when it lands on a service 🔔`
+          : `"${title}" added to watchlist`;
+        showToast('✅', msg, 3500);
+      } else {
+        showToast('❌', 'Could not save to watchlist', 3000);
+      }
+    } catch(e) { showToast('❌', 'Error saving to watchlist', 3000); }
+  }
+}
+
 /* ── KEEP-ALIVE: prevent Streamlit sleep when tab is open ── */
 (function keepAlive() {
   setInterval(function() {
@@ -2755,5 +2930,10 @@ function wPolar() {
 </body>
 </html>"""
 
-HTML = HTML.replace('__WJ__', WJ).replace('__DJ__', DJ)
+HTML = (HTML
+    .replace('__WJ__', WJ)
+    .replace('__DJ__', DJ)
+    .replace('__SUPA_URL__', SUPABASE_URL_PUB)
+    .replace('__SUPA_ANON__', SUPABASE_ANON_KEY)
+)
 components.html(HTML, height=4400, scrolling=True)
