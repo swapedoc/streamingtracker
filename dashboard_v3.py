@@ -606,13 +606,17 @@ def load_all_data():
         db = create_client(url, key)
         sr = db.table('scores').select('*, content(*)').order('final_score', desc=True).execute()
         # Supabase caps at 1000 rows by default — fetch in two pages
-        dr1 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(0, 999).execute()
-        dr2 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(1000, 1999).execute()
-        dr3 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(2000, 2999).execute()
-        dr4 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(3000, 3999).execute()
-        dr5 = db.table('discover_content').select('id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime').order('popularity', desc=True).range(4000, 4999).execute()
+        COLS = 'id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime'
+        all_discover = []
+        for start in range(0, 50000, 1000):
+            page = db.table('discover_content').select(COLS).order('popularity', desc=True).range(start, start + 999).execute()
+            if not page.data:
+                break
+            all_discover.extend(page.data)
+            if len(page.data) < 1000:
+                break
         class _DR:
-            data = (dr1.data or []) + (dr2.data or []) + (dr3.data or []) + (dr4.data or []) + (dr5.data or [])
+            data = all_discover
         dr = _DR()
         watch = []
         for row in (sr.data or []):

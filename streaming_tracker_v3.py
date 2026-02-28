@@ -3479,10 +3479,17 @@ def _enrich_discover_details():
     db   = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
     tmdb = TMDbResolver()
 
-    # Fetch all rows — we'll filter in Python to cover all missing-data cases
-    all_rows = db.table('discover_content').select(
-        'id, tmdb_id, content_type, trailer_id, runtime, episode_runtime'
-    ).execute().data or []
+    # Paginate to bypass Supabase 1000 row default limit
+    all_rows = []
+    for start in range(0, 50000, 1000):
+        page = db.table('discover_content').select(
+            'id, tmdb_id, content_type, trailer_id, runtime, episode_runtime'
+        ).range(start, start + 999).execute()
+        if not page.data:
+            break
+        all_rows.extend(page.data)
+        if len(page.data) < 1000:
+            break
 
     to_do = []
     for r in all_rows:
@@ -3626,9 +3633,16 @@ def main():
         db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
         for table in ['content', 'discover_content']:
             print(f"\n  Checking {table}...")
-            rows = db.table(table).select('id, title, content_type, hindi_dub').execute()
-            if rows.data:
-                f, nf, e, s = process_table(db, table, rows.data)
+            all_rows = []
+            for start in range(0, 50000, 1000):
+                page = db.table(table).select('id, title, content_type, hindi_dub').range(start, start + 999).execute()
+                if not page.data:
+                    break
+                all_rows.extend(page.data)
+                if len(page.data) < 1000:
+                    break
+            if all_rows:
+                f, nf, e, s = process_table(db, table, all_rows)
                 print(f"  ✅ Found: {f}  ✗ None: {nf}  ⏭ Skipped: {s}  ⚠️ Errors: {e}")
     except Exception as e:
         print(f"  ⚠️  Hindi dub check failed (non-fatal): {e}")
