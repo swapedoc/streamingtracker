@@ -1591,19 +1591,19 @@ body:has(.dc:hover) #cursor-ring {
 /* ── VIBE SEARCH ── */
 .vibe-bar {
   display: flex; align-items: center; gap: 10px;
-  background: rgba(232,197,71,0.04);
-  border: 1px solid rgba(232,197,71,0.2);
-  border-radius: 6px; padding: 10px 16px; margin-bottom: 20px;
+  background: rgba(232,197,71,0.07);
+  border: 1px solid rgba(232,197,71,0.45);
+  border-radius: 6px; padding: 12px 18px; margin-bottom: 24px;
   transition: border-color .2s;
 }
-.vibe-bar:focus-within { border-color: rgba(232,197,71,0.5); }
-.vibe-icon { font-size: 1.1rem; flex-shrink: 0; }
+.vibe-bar:focus-within { border-color: rgba(232,197,71,0.8); box-shadow: 0 0 0 3px rgba(232,197,71,0.08); }
+.vibe-icon { font-size: 1.2rem; flex-shrink: 0; }
 .vibe-input {
   flex: 1; background: transparent; border: none; outline: none;
-  color: #fff; font-family: var(--mono); font-size: 0.72rem;
+  color: #fff; font-family: var(--mono); font-size: 0.75rem;
   letter-spacing: 0.04em;
 }
-.vibe-input::placeholder { color: #555; }
+.vibe-input::placeholder { color: #888; }
 .vibe-btn {
   background: #E8C547; border: none; border-radius: 4px;
   color: #07070A; font-family: var(--mono); font-size: 0.65rem;
@@ -2020,13 +2020,12 @@ body:has(.dc:hover) #cursor-ring {
 
 <!-- ── DISCOVER TAB ── -->
 <div id="tab-disc" style="display:none">
-  <div class="stats-ribbon" id="ds"></div>
 
   <!-- ── VIBE SEARCH BAR ── -->
   <div class="vibe-bar">
     <span class="vibe-icon">🔮</span>
     <input id="vibe-input" class="vibe-input"
-      placeholder="Describe a vibe… e.g. 'mind-bending sci-fi with a twist ending'"
+      placeholder="Vibe search… e.g. 'mind-bending sci-fi with a twist ending'"
       autocomplete="off" spellcheck="false"/>
     <button class="vibe-btn" id="vibe-btn" onclick="vibeSearch()">Search</button>
     <button class="vibe-clear-btn" id="vibe-clear-btn" onclick="vibeClear()" style="display:none">✕ Clear</button>
@@ -2036,6 +2035,8 @@ body:has(.dc:hover) #cursor-ring {
     <div class="disc-grid" id="vibe-grid"></div>
     <div class="vibe-divider">— Regular results below —</div>
   </div>
+
+  <div class="stats-ribbon" id="ds"></div>
   <div class="ctrl">
     <button class="pill on" data-dp="all"         onclick="sdP('all',this)">All</button>
     <button class="pill" data-dp="Netflix"         onclick="sdP('Netflix',this)">Netflix</button>
@@ -2994,7 +2995,7 @@ async function vibeSearch() {
   if (clearBtn) clearBtn.style.display = '';
 
   try {
-    const res = await fetch(`${SUPA_URL}/functions/v1/vibe-search`, {
+    const res = await fetch(`${SUPA_URL}/functions/v1/smart-endpoint`, {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
