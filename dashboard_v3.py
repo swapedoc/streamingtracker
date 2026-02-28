@@ -617,6 +617,11 @@ def load_all_data():
                 'imdb_rating': c.get('imdb_rating'), 'discovery_source': c.get('discovery_source','catalog'),
                 'stream_url': str(c.get('stream_url') or ''),
                 'hindi_dub': bool(c.get('hindi_dub', False)),
+                'runtime': c.get('runtime'), 'seasons': c.get('seasons'),
+                'episode_count': c.get('episode_count'), 'episode_runtime': c.get('episode_runtime'),
+                'trailer_id': c.get('trailer_id') or '',
+                'genre': c.get('genre') or '',
+                'tv_genre': c.get('tv_genre') or '',
             })
         return watch, dr.data or [], None
     except Exception as e:
@@ -634,9 +639,41 @@ def safe(v):
     except: pass
     return str(v)
 
+def format_binge_time(content_type, runtime=None, seasons=None, episode_count=None, episode_runtime=None):
+    """Return a human-readable time commitment string or empty string."""
+    if content_type == 'movie':
+        if runtime and int(runtime) > 0:
+            h, m = divmod(int(runtime), 60)
+            return f"{h}h {m:02d}m" if h else f"{m}m"
+    else:
+        s_label = ''
+        if seasons and int(seasons) > 0:
+            s = 's' if int(seasons) != 1 else ''
+            s_label = f"{seasons} Season{s}"
+
+        # Only show total hours if episode_runtime is a believable value (> 0)
+        if s_label and episode_count and episode_runtime and int(episode_runtime) > 0:
+            total_mins = int(episode_count) * int(episode_runtime)
+            total_hrs  = round(total_mins / 60)
+            if total_hrs >= 1:
+                return f"{s_label} · {total_hrs}h total"
+            elif total_mins > 0:
+                return f"{s_label} · {total_mins}m total"
+
+        # Fallback: just seasons, or seasons + episode count if no runtime
+        if s_label and episode_count and int(episode_count) > 0:
+            return f"{s_label} · {episode_count} eps"
+        return s_label
+    return ''
+
 def to_js(data, disc=False):
     out = []
     for r in data:
+        binge = format_binge_time(
+            r.get('content_type', ''),
+            r.get('runtime'), r.get('seasons'),
+            r.get('episode_count'), r.get('episode_runtime'),
+        )
         if disc:
             rating = r.get('imdb_rating')
             try:
@@ -646,9 +683,13 @@ def to_js(data, disc=False):
                 'type': safe(r.get('content_type')), 'year': safe(r.get('release_year')),
                 'rating': float(rating or 0), 'poster': safe(r.get('poster_path')),
                 'overview': safe(r.get('overview',''))[:280], 'category': safe(r.get('category')),
+                'genre': safe(r.get('genre', '')),
+                'tv_genre': safe(r.get('tv_genre', '')),
                 'tmdb_id': safe(r.get('tmdb_id')),
                 'stream_url': safe(r.get('stream_url', '')),
-                'hindi_dub': bool(r.get('hindi_dub', False))})
+                'hindi_dub': bool(r.get('hindi_dub', False)),
+                'binge': binge,
+                'trailer_id': safe(r.get('trailer_id', ''))})
         else:
             out.append({'title': safe(r.get('title')), 'platform': safe(r.get('platform')),
                 'type': safe(r.get('content_type')), 'year': safe(r.get('release_year')),
@@ -660,7 +701,11 @@ def to_js(data, disc=False):
                 'yt': float(r.get('youtube_score') or 0), 'reddit': float(r.get('reddit_score') or 0),
                 'imdb': float(r.get('imdb_score') or 0), 'reviews': int(r.get('review_count') or 0),
                 'stream_url': safe(r.get('stream_url', '')),
-                'hindi_dub': bool(r.get('hindi_dub', False))})
+                'hindi_dub': bool(r.get('hindi_dub', False)),
+                'binge': binge,
+                'trailer_id': safe(r.get('trailer_id', '')),
+                'genre': safe(r.get('genre', '')),
+                'tv_genre': safe(r.get('tv_genre', ''))})
     return json.dumps(out)
 
 WJ = to_js(watch_data)
@@ -753,6 +798,9 @@ body::after {
 
 /* custom cursor */
 * { cursor: none !important; }
+/* restore pointer for trailer button and panel action buttons */
+#pp-trailer-btn, .panel-watch-btn, .panel-link, .panel-close-btn,
+.tv-send-btn, .jw-link { cursor: pointer !important; }
 #cursor {
   position: fixed; z-index: 9999; pointer-events: none;
   width: 6px; height: 6px; border-radius: 50%;
@@ -1184,6 +1232,17 @@ body:has(.dc:hover) #cursor-ring {
   font-family: var(--mono); font-size: 0.5rem;
   color: var(--t-dim); letter-spacing: 0.06em;
 }
+.card-genre {
+  font-family: var(--mono); font-size: 0.48rem;
+  letter-spacing: 0.08em; opacity: 0.85;
+  display: block; margin-top: 2px;
+}
+.card-binge {
+  font-family: var(--mono); font-size: 0.5rem;
+  color: var(--t-mid); letter-spacing: 0.06em;
+  margin-bottom: 6px;
+  opacity: 0.75;
+}
 
 /* score bar — thin golden line */
 .score-line {
@@ -1267,12 +1326,15 @@ body:has(.dc:hover) #cursor-ring {
   width: 100%; height: 100%;
   object-fit: cover;
   filter: brightness(0.35) saturate(0.6);
+  transition: opacity 0.3s ease;
 }
 .panel-poster-wrap::after {
   content: '';
   position: absolute; inset: 0;
+  z-index: 1;   /* sit above img, but below trailer iframe (z-index:2) and button (z-index:3) */
   background: linear-gradient(to bottom,
     transparent 0%, rgba(12,12,16,0.6) 50%, var(--v1) 100%);
+  pointer-events: none;  /* never block clicks on button */
 }
 .panel-poster-ph {
   width: 100%; height: 100%;
@@ -1475,6 +1537,22 @@ body:has(.dc:hover) #cursor-ring {
   font-family: var(--mono); font-size: 0.5rem;
   color: var(--t-void); letter-spacing: 0.06em;
 }
+.dc-binge {
+  font-family: var(--mono); font-size: 0.52rem;
+  color: var(--t-mid); letter-spacing: 0.05em;
+  margin-top: 4px; opacity: 0.8;
+}
+.dc-trailer-btn {
+  position: absolute; bottom: 8px; right: 8px; z-index: 6;
+  background: rgba(0,0,0,0.75); border: 1px solid rgba(232,197,71,0.45);
+  color: #E8C547; font-family: var(--mono); font-size: 0.48rem;
+  letter-spacing: 0.1em; padding: 5px 10px;
+  text-transform: uppercase; backdrop-filter: blur(4px);
+  transition: all 0.2s; cursor: pointer !important;
+  opacity: 0; pointer-events: none;
+}
+.dc:hover .dc-trailer-btn { opacity: 1; pointer-events: auto; }
+.dc-trailer-btn.playing { color: #FF4455; border-color: rgba(255,68,85,0.45); opacity: 1; pointer-events: auto; }
 .dc-foot {
   display: flex; align-items: center; gap: 6px; margin-top: auto;
 }
@@ -1773,6 +1851,8 @@ body:has(.dc:hover) #cursor-ring {
     <button class="pill" data-t="movie"    onclick="sT('movie',this)">Films</button>
     <button class="pill" data-t="tv"       onclick="sT('tv',this)">Series</button>
     <div class="ctrl-sep"></div>
+    <div id="watch-genre-pills" style="display:contents"></div>
+    <div class="ctrl-sep"></div>
     <button class="pill" id="w-hindi-btn" onclick="toggleHindiW(this)">🎙 Hindi Dub</button>
     <div class="search-wrap">
       <span class="search-icon">↳</span>
@@ -1804,16 +1884,7 @@ body:has(.dc:hover) #cursor-ring {
     <button class="pill" id="d-hindi-btn" onclick="toggleHindiD(this)">🎙 Hindi Dub</button>
   </div>
   <div class="ctrl">
-    <button class="pill on" data-c="all"              onclick="sC('all',this)">All</button>
-    <button class="pill" data-c="classics"             onclick="sC('classics',this)">Classics</button>
-    <button class="pill" data-c="underdog"             onclick="sC('underdog',this)">Hidden Gems</button>
-    <button class="pill" data-c="indian"               onclick="sC('indian',this)">Hindi</button>
-    <button class="pill" data-c="genre_action"         onclick="sC('genre_action',this)">Action</button>
-    <button class="pill" data-c="genre_thriller"       onclick="sC('genre_thriller',this)">Thriller</button>
-    <button class="pill" data-c="genre_horror"         onclick="sC('genre_horror',this)">Horror</button>
-    <button class="pill" data-c="genre_comedy"         onclick="sC('genre_comedy',this)">Comedy</button>
-    <button class="pill" data-c="genre_drama"          onclick="sC('genre_drama',this)">Drama</button>
-    <button class="pill" data-c="genre_sci-fi"         onclick="sC('genre_sci-fi',this)">Sci-Fi</button>
+    <div id="disc-cat-pills" style="display:contents"></div>
     <div class="search-wrap">
       <span class="search-icon">↳</span>
       <input class="search" placeholder="Search…" oninput="dSr(this.value)"/>
@@ -1869,6 +1940,120 @@ const CL = {
   'genre_drama': 'Drama', 'genre_sci-fi': 'Sci-Fi', 'genre_romance': 'Romance',
 };
 
+/* ── TV GENRE PILLS (used when Series filter is active) ── */
+const TV_GENRE_PILLS = [
+  { label: 'Action & Adventure', color: '#FF3355' },
+  { label: 'Sci-Fi & Fantasy',   color: '#C6F135' },
+  { label: 'Crime',              color: '#B88EFF' },
+  { label: 'Mystery',            color: '#00F5C4' },
+  { label: 'Comedy',             color: '#FFB830' },
+  { label: 'Drama',              color: '#4DBFFF' },
+  { label: 'Animation',          color: '#FF9EAA' },
+  { label: 'Documentary',        color: '#8CB4CC' },
+  { label: 'War & Politics',     color: '#E8C547' },
+  { label: 'Western',            color: '#FF7043' },
+];
+
+/* ── FILM GENRE PILLS ── */
+const FILM_GENRE_PILLS = [
+  { cat: 'genre_action',   label: 'Action'   },
+  { cat: 'genre_thriller', label: 'Thriller' },
+  { cat: 'genre_horror',   label: 'Horror'   },
+  { cat: 'genre_comedy',   label: 'Comedy'   },
+  { cat: 'genre_drama',    label: 'Drama'    },
+  { cat: 'genre_sci-fi',   label: 'Sci-Fi'   },
+  { cat: 'genre_romance',  label: 'Romance'  },
+];
+
+/* ── RENDER DISCOVER CATEGORY PILLS ──
+   Dynamically switches between film genre pills and TV genre pills
+   depending on the current dType filter.                              */
+function renderDiscPills() {
+  const container = document.getElementById('disc-cat-pills');
+  if (!container) return;
+
+  // Always-present pills
+  const basePills = `
+    <button class="pill${dCat==='all'?' on':''}" data-c="all" onclick="sC('all',this)">All</button>
+    <button class="pill${dCat==='classics'?' on':''}" data-c="classics" onclick="sC('classics',this)">Classics</button>
+    <button class="pill${dCat==='underdog'?' on':''}" data-c="underdog" onclick="sC('underdog',this)">Hidden Gems</button>
+    <button class="pill${dCat==='indian'?' on':''}" data-c="indian" onclick="sC('indian',this)">Hindi</button>
+    <div class="ctrl-sep"></div>`;
+
+  let genrePills = '';
+
+  if (dType === 'tv') {
+    // TV mode — only show genres that have actual content in D
+    const discTvGenres = new Set(D.filter(d => d.tv_genre).map(d => d.tv_genre));
+    genrePills = TV_GENRE_PILLS.filter(g => discTvGenres.has(g.label)).map(g =>
+      `<button class="pill${dCat==='tv_genre:'+g.label?' on':''}"
+        style="${dCat==='tv_genre:'+g.label?'border-color:'+g.color+';color:'+g.color:''}"
+        data-c="tv_genre:${g.label}"
+        onclick="sC('tv_genre:${g.label.replace(/'/g,"\\'")}',this)">${g.label}</button>`
+    ).join('');
+  } else {
+    // Film or All mode — only show genres that have actual content in D
+    const discFilmGenres = new Set(D.filter(d => d.genre).map(d => d.genre));
+    genrePills = FILM_GENRE_PILLS.filter(g => discFilmGenres.has(g.label)).map(g =>
+      `<button class="pill${dCat===g.cat?' on':''}" data-c="${g.cat}" onclick="sC('${g.cat}',this)">${g.label}</button>`
+    ).join('');
+  }
+
+  container.innerHTML = basePills + genrePills;
+}
+
+/* ── WATCH NOW GENRE PILLS — dynamic, mirrors Discover behaviour ── */
+function renderWatchGenrePills() {
+  const container = document.getElementById('watch-genre-pills');
+  if (!container) return;
+
+  const WATCH_FILM_GENRES = [
+    { label: 'All Genres', val: 'all' },
+    { label: 'Action',    val: 'Action'   },
+    { label: 'Horror',    val: 'Horror'   },
+    { label: 'Thriller',  val: 'Thriller' },
+    { label: 'Comedy',    val: 'Comedy'   },
+    { label: 'Drama',     val: 'Drama'    },
+    { label: 'Sci-Fi',    val: 'Sci-Fi'   },
+    { label: 'Romance',   val: 'Romance'  },
+  ];
+
+  let pills = '';
+
+  if (wType === 'tv') {
+    // Series mode — only show TV genres that have content in W
+    const watchTvGenres = new Set(W.filter(d => d.tv_genre).map(d => d.tv_genre));
+    pills = [{ label: 'All Genres', val: 'all' }]
+      .concat(TV_GENRE_PILLS.filter(g => watchTvGenres.has(g.label)))
+      .map(g => {
+        const isOn = wGenre === (g.val || g.label);
+        const val  = g.val || g.label;
+        const col  = g.color || '';
+        const onStyle = (isOn && col) ? `border-color:${col};color:${col}` : '';
+        return `<button class="pill${isOn?' on':''}" data-g="${val}"
+          style="${onStyle}"
+          onclick="sG('${val.replace(/'/g,"\'")}',this)">${g.label}</button>`;
+      }).join('');
+  } else {
+    // Film / All mode — only show film genres that have content in W
+    const watchFilmGenres = new Set(W.filter(d => d.genre).map(d => d.genre));
+    pills = WATCH_FILM_GENRES.filter(g => g.val === 'all' || watchFilmGenres.has(g.val)).map(g => {
+      const isOn = wGenre === g.val;
+      return `<button class="pill${isOn?' on':''}" data-g="${g.val}"
+        onclick="sG('${g.val}',this)">${g.label}</button>`;
+    }).join('');
+  }
+
+  container.innerHTML = pills;
+}
+
+/* ── WATCH NOW GENRE COLORS ── */
+const GC = {
+  'Action':   '#FF3355', 'Horror':  '#00F5C4', 'Thriller': '#B88EFF',
+  'Comedy':   '#FFB830', 'Drama':   '#4DBFFF', 'Sci-Fi':   '#C6F135',
+  'Romance':  '#FF9EAA',
+};
+
 /* ── SCORE COLOR ── */
 function sc(s) {
   if (s >= 75) return '#E8C547';
@@ -1891,7 +2076,7 @@ function verdict(s) {
 function pc(p) { return PC[p] || '#666'; }
 
 /* ── STATE ── */
-let wPlat='all', wType='all', wSearch='', wSort='score';
+let wPlat='all', wType='all', wSearch='', wSort='score', wGenre='all';
 let dCat='all',  dSearch='';
 
 /* ── CUSTOM CURSOR ── */
@@ -1918,6 +2103,7 @@ function getFW() {
   return base
     .filter(d => wPlat==='all' || d.platform===wPlat)
     .filter(d => wType==='all'  || d.type===wType)
+    .filter(d => wGenre==='all' || (wType==='tv' ? d.tv_genre===wGenre : d.genre===wGenre))
     .filter(d => !wSearch || d.title.toLowerCase().includes(wSearch.toLowerCase()))
     .sort((a,b) => {
       if (wSort==='score') return b.score - a.score;
@@ -2018,7 +2204,9 @@ function makeCard(d, i, wIdx) {
     <div class="card-meta">
       <span class="card-plat" style="--pl:${platCol}"></span>
       <span class="card-type">${d.type==='tv'?'Series':'Film'} · ${d.year||'—'}</span>
+      ${d.genre ? `<span class="card-genre" style="color:${GC[d.genre]||'#888'}">${d.genre}</span>` : ''}
     </div>
+    ${d.binge ? `<div class="card-binge">⏱ ${d.binge}${d.trailer_id ? ' · <span style="color:var(--gold);opacity:.7">▶ Trailer</span>' : ''}</div>` : (d.trailer_id ? `<div class="card-binge" style="color:var(--gold);opacity:.7">▶ Trailer available</div>` : '')}
     <div class="score-line">
       <div class="score-line-fill" style="width:${pct}%;background:${col};box-shadow:0 0 8px ${col}"></div>
     </div>
@@ -2065,6 +2253,7 @@ function openPanelIdx(idxStr, el) {
 let panelCount = 0;
 function openPanel(d, clickedEl) {
   panelCount++;
+  _trailerActive = false;  // reset trailer toggle state on each panel open
   const col  = sc(d.score);
   const colA = scA(d.score);
   const img  = d.poster ? 'https://image.tmdb.org/t/p/w780'+d.poster : null;
@@ -2086,8 +2275,25 @@ function openPanel(d, clickedEl) {
 
   // Build shell with placeholder IDs — never interpolate user data into innerHTML
   document.getElementById('pi').innerHTML = `
-    <div class="panel-poster-wrap">
-      ${img ? `<img src="${img}" alt=""/>` : `<div class="panel-poster-ph">🎬</div>`}
+    <div class="panel-poster-wrap" id="pp-media-wrap">
+      ${img ? `<img id="pp-poster-img" src="${img}" alt=""/>` : `<div class="panel-poster-ph">🎬</div>`}
+      ${d.trailer_id ? `
+      <div id="pp-trailer-wrap" style="display:none;position:absolute;inset:0;z-index:2;">
+        <iframe id="pp-trailer-iframe"
+          src=""
+          style="width:100%;height:100%;border:none;"
+          allow="autoplay; encrypted-media"
+          allowfullscreen>
+        </iframe>
+      </div>
+      <button id="pp-trailer-btn" onclick="toggleTrailer('${d.trailer_id}')"
+        style="position:absolute;bottom:12px;right:12px;z-index:3;
+               background:rgba(0,0,0,0.75);border:1px solid rgba(232,197,71,0.5);
+               color:#E8C547;font-family:var(--mono);font-size:0.55rem;
+               letter-spacing:0.12em;padding:7px 14px;cursor:pointer;
+               text-transform:uppercase;backdrop-filter:blur(4px);transition:all .2s;">
+        ▶ Watch Trailer
+      </button>` : ''}
     </div>
     <div class="panel-body">
       <div class="panel-plat" id="pp-plat" style="--pl:${platCol};color:${platCol}"></div>
@@ -2096,6 +2302,8 @@ function openPanel(d, clickedEl) {
         <div class="pm-item">Type<span>${d.type==='tv'?'Series':'Film'}</span></div>
         <div class="pm-item">Year<span>${d.year||'—'}</span></div>
         <div class="pm-item">Reviews<span>${d.reviews}</span></div>
+        ${d.genre ? `<div class="pm-item">Genre<span style="color:${GC[d.genre]||'#888'}">${d.genre}</span></div>` : ''}
+        ${d.binge ? `<div class="pm-item">Runtime<span>${d.binge}</span></div>` : ''}
       </div>
       <div class="panel-score-section">
         <div class="panel-big-score" style="color:${col};text-shadow:0 0 80px ${colA}">${d.score.toFixed(0)}</div>
@@ -2128,20 +2336,18 @@ function openPanel(d, clickedEl) {
           };
           const key = Object.keys(cfg).find(k => u.includes(k)) || '';
           const c = cfg[key] || {bg:'#E8C547', fg:'#07070A'};
-          // Netflix: use nflx:// scheme — works in Safari on iOS.
-          // Chrome/Brave on iOS block custom schemes from webpages (Netflix's intentional lockdown).
-          // For those browsers we fall back to web URL + show a toast hint.
           var watchHref = u;
+          var isIOS       = /iPhone|iPad|iPod/i.test(navigator.userAgent);
           var isChromeiOS = /CriOS/i.test(navigator.userAgent);
           var isBraveiOS  = /Brave/i.test(navigator.userAgent);
           if (u.includes('netflix.com')) {
             var nm = u.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
             if (nm) {
-              if (!isChromeiOS && !isBraveiOS) {
-                watchHref = 'nflx://www.netflix.com/title/' + nm[1]; // Safari: opens app
-              } else {
-                watchHref = u; // Chrome/Brave: open web, show hint via onclick
+              if (isIOS && !isChromeiOS && !isBraveiOS) {
+                // iOS Safari only — app deep link works here
+                watchHref = 'nflx://www.netflix.com/title/' + nm[1];
               }
+              // Desktop and Chrome/Brave iOS: keep plain https:// URL
             }
           }
           return `
@@ -2195,12 +2401,47 @@ function closeP() {
   p.style.height = '';
   document.getElementById('overlay').style.top = '';
   document.getElementById('overlay').style.height = '';
+  // Stop trailer if playing
+  const iframe = document.getElementById('pp-trailer-iframe');
+  if (iframe) { iframe.src = ''; }
+  const tw = document.getElementById('pp-trailer-wrap');
+  const pi = document.getElementById('pp-poster-img');
+  const tb = document.getElementById('pp-trailer-btn');
+  if (tw) tw.style.display = 'none';
+  if (pi) pi.style.opacity = '1';
+  if (tb) tb.textContent = '▶ Watch Trailer';
+}
+
+let _trailerActive = false;
+function toggleTrailer(videoId) {
+  const tw  = document.getElementById('pp-trailer-wrap');
+  const pi  = document.getElementById('pp-poster-img');
+  const btn = document.getElementById('pp-trailer-btn');
+  const iframe = document.getElementById('pp-trailer-iframe');
+  if (!tw || !iframe) return;
+  _trailerActive = !_trailerActive;
+  if (_trailerActive) {
+    iframe.src = 'https://www.youtube.com/embed/' + videoId + '?autoplay=1&rel=0';
+    tw.style.display = 'block';
+    if (pi) pi.style.opacity = '0';
+    btn.innerHTML = '✕ Close Trailer';
+    btn.style.borderColor = 'rgba(255,68,85,0.5)';
+    btn.style.color = '#FF4455';
+  } else {
+    iframe.src = '';
+    tw.style.display = 'none';
+    if (pi) pi.style.opacity = '1';
+    btn.innerHTML = '▶ Watch Trailer';
+    btn.style.borderColor = 'rgba(232,197,71,0.5)';
+    btn.style.color = '#E8C547';
+  }
 }
 document.addEventListener('keydown', e => { if (e.key==='Escape') closeP(); });
 
 /* ── FILTER HANDLERS ── */
 function sP(v,b) { wPlat=v; document.querySelectorAll('[data-p]').forEach(x=>x.classList.toggle('on',x===b)); renderWatch(); }
-function sT(v,b) { wType=v; document.querySelectorAll('[data-t]').forEach(x=>x.classList.toggle('on',x===b)); renderWatch(); }
+function sT(v,b) { wType=v; wGenre='all'; document.querySelectorAll('[data-t]').forEach(x=>x.classList.toggle('on',x===b)); renderWatchGenrePills(); renderWatch(); }
+function sG(v,b) { wGenre=v; renderWatchGenrePills(); renderWatch(); }
 function wSr(v)  { wSearch=v; renderWatch(); }
 function wSo(v)  { wSort=v; renderWatch(); }
 
@@ -2214,6 +2455,18 @@ function getFD() {
     .filter(d => {
       if (dCat === 'all') return true;
       if (dCat === 'genre_picks') return d.category && d.category.startsWith('genre_');
+      // TV genre pills use 'tv_genre:Label' prefix — filter on d.tv_genre field
+      if (dCat.startsWith('tv_genre:')) {
+        const label = dCat.slice('tv_genre:'.length);
+        return d.tv_genre === label;
+      }
+      // Film genre pills — filter on resolved d.genre field
+      if (dCat.startsWith('genre_')) {
+        const label = dCat.replace('genre_', '');
+        const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
+        const sciLabel = capLabel === 'Sci-fi' ? 'Sci-Fi' : capLabel;
+        return d.genre === sciLabel;
+      }
       return d.category === dCat;
     })
     .filter(d => dPlat==='all' || d.platform===dPlat)
@@ -2226,7 +2479,23 @@ function renderDisc() {
   const data = getFD();
   renderStats(D, 'ds', true);
   const el = document.getElementById('dg');
-  if (!data.length) { el.innerHTML='<div class="empty">Nothing found</div>'; return; }
+  if (!data.length) {
+    const catLabel = dCat !== 'all' ? ` in <b>${CL[dCat] || dCat}</b>` : '';
+    const typeLabel = dType !== 'all' ? ` (${dType === 'tv' ? 'Series' : 'Films'} only)` : '';
+    el.innerHTML = `<div class="empty">
+      No titles found${catLabel}${typeLabel}
+      <br><span style="font-size:0.65rem;opacity:0.5;display:block;margin-top:8px">
+        Try switching to All Types — genre picks skew toward films
+      </span>
+      <button onclick="dType='all';document.querySelectorAll('[data-dt]').forEach(x=>x.classList.toggle('on',x.dataset.dt==='all'));renderDisc();"
+        style="margin-top:12px;font-family:var(--mono);font-size:0.55rem;letter-spacing:0.12em;
+               text-transform:uppercase;background:none;border:1px solid var(--v4);
+               color:var(--t-dim);padding:6px 14px;cursor:pointer;">
+        Reset to All Types
+      </button>
+    </div>`;
+    return;
+  }
   el.innerHTML = data.slice(0,150).map((d,i) => {
     const img    = d.poster ? 'https://image.tmdb.org/t/p/w200'+d.poster : null;
     const catCol  = CC[d.category] || '#666';
@@ -2239,12 +2508,20 @@ function renderDisc() {
     return `
 <div class="dc fu" style="animation-delay:${delay}s;--cc:${catCol}">
   <a href="${tmdb}" target="_blank" style="text-decoration:none;color:inherit;display:flex;flex-direction:column;flex:1">
-  <div class="dc-poster">
+  <div class="dc-poster" style="position:relative;">
     ${img ? `<img src="${img}" loading="lazy" alt="${d.title}"/>` : `<div class="dc-poster-ph">🎬</div>`}
+    ${d.trailer_id ? `
+    <div class="dc-trailer-wrap" id="dct-${i}" style="display:none;position:absolute;inset:0;z-index:5;">
+      <iframe id="dcif-${i}" src="" style="width:100%;height:100%;border:none;"
+        allow="autoplay; encrypted-media" allowfullscreen></iframe>
+    </div>
+    <button class="dc-trailer-btn" onclick="event.preventDefault();event.stopPropagation();toggleDiscTrailer(${i},'${d.trailer_id}')"
+      data-trailer="${d.trailer_id}" data-idx="${i}">▶ Trailer</button>` : ''}
   </div>
   <div class="dc-body">
     <div class="dc-title">${d.title}</div>
     <div class="dc-sub">${d.type==='tv'?'Series':'Film'} · ${d.year} · ${d.platform}</div>
+    ${d.binge ? `<div class="dc-binge">⏱ ${d.binge}</div>` : ''}
     <div class="dc-foot">
       ${d.rating ? `<span class="dc-rating">✦ ${d.rating.toFixed(1)}</span>` : ''}
       <span class="dc-tag" style="color:${catCol};border-color:${catCol}">${catLbl}</span>
@@ -2259,9 +2536,10 @@ function renderDisc() {
           if (d.stream_url.includes('netflix.com')) {
             var dm = d.stream_url.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
             if (dm) {
+              var isIOS2      = /iPhone|iPad|iPod/i.test(navigator.userAgent);
               var isChromeiOS2 = /CriOS/i.test(navigator.userAgent);
               var isBraveiOS2  = /Brave/i.test(navigator.userAgent);
-              dHref = (!isChromeiOS2 && !isBraveiOS2)
+              dHref = (isIOS2 && !isChromeiOS2 && !isBraveiOS2)
                 ? 'nflx://www.netflix.com/title/' + dm[1]
                 : d.stream_url;
             }
@@ -2278,9 +2556,19 @@ function renderDisc() {
   }).join('');
 }
 
-function sC(v,b) { dCat=v; document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on',x===b)); renderDisc(); }
+function sC(v,b) {
+  dCat=v;
+  document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on',x===b));
+  renderDisc();
+}
 function sdP(v,b) { dPlat=v; document.querySelectorAll('[data-dp]').forEach(x=>x.classList.toggle('on',x===b)); renderDisc(); }
-function sdT(v,b) { dType=v; document.querySelectorAll('[data-dt]').forEach(x=>x.classList.toggle('on',x===b)); renderDisc(); }
+function sdT(v,b) {
+  dType=v;
+  dCat='all';  // reset category when type switches — film genres don't apply to series and vice versa
+  document.querySelectorAll('[data-dt]').forEach(x=>x.classList.toggle('on',x===b));
+  renderDiscPills();  // swap genre pills for the new type
+  renderDisc();
+}
 function dSr(v)  { dSearch=v; renderDisc(); }
 
 /* ── TAB SWITCH ── */
@@ -2299,7 +2587,9 @@ const ts = now.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'num
 document.getElementById('ts').textContent = ts;
 document.getElementById('nav-ts').textContent = ts;
 
+renderWatchGenrePills();
 renderWatch();
+renderDiscPills();
 renderDisc();
 
 
@@ -2348,6 +2638,42 @@ function copyTitle(title, btn) {
   }
 }
 /* ── STAT CARD FILTER HELPERS ── */
+
+/* ── DISCOVER TRAILER TOGGLE ── */
+let _discTrailerActive = null;  // tracks which card index is playing
+function toggleDiscTrailer(idx, videoId) {
+  const wrap   = document.getElementById('dct-' + idx);
+  const iframe = document.getElementById('dcif-' + idx);
+  const btn    = document.querySelector('.dc-trailer-btn[data-idx="' + idx + '"]');
+  if (!wrap || !iframe) return;
+
+  const isPlaying = _discTrailerActive === idx;
+
+  // Stop any currently playing trailer first
+  if (_discTrailerActive !== null && _discTrailerActive !== idx) {
+    const oldWrap   = document.getElementById('dct-' + _discTrailerActive);
+    const oldIframe = document.getElementById('dcif-' + _discTrailerActive);
+    const oldBtn    = document.querySelector('.dc-trailer-btn[data-idx="' + _discTrailerActive + '"]');
+    if (oldWrap)   oldWrap.style.display = 'none';
+    if (oldIframe) oldIframe.src = '';
+    if (oldBtn)    { oldBtn.textContent = '▶ Trailer'; oldBtn.classList.remove('playing'); }
+    _discTrailerActive = null;
+  }
+
+  if (isPlaying) {
+    // Toggle off
+    wrap.style.display = 'none';
+    iframe.src = '';
+    if (btn) { btn.textContent = '▶ Trailer'; btn.classList.remove('playing'); }
+    _discTrailerActive = null;
+  } else {
+    // Toggle on
+    iframe.src = 'https://www.youtube.com/embed/' + videoId + '?autoplay=1&rel=0';
+    wrap.style.display = 'block';
+    if (btn) { btn.textContent = '✕ Stop'; btn.classList.add('playing'); }
+    _discTrailerActive = idx;
+  }
+}
 
 /* ── HINDI DUB FILTER ── */
 function toggleHindiW(btn) {
