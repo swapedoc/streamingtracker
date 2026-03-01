@@ -1589,43 +1589,114 @@ body:has(.dc:hover) #cursor-ring {
 }
 .wl-remove-btn:hover { background: rgba(255,68,85,0.1); border-color: #FF4455; }
 
-/* ── VIBE SEARCH ── */
-.vibe-bar {
+/* ── VIBE SEARCH PANEL ── */
+.vibe-panel {
+  border: 1px solid rgba(232,197,71,0.4);
+  border-radius: 10px;
+  background: rgba(232,197,71,0.03);
+  margin-bottom: 28px;
+  overflow: hidden;
+  box-shadow: 0 0 24px rgba(232,197,71,0.05);
+}
+.vibe-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid rgba(232,197,71,0.12);
+}
+.vibe-panel-title {
   display: flex; align-items: center; gap: 10px;
-  background: rgba(232,197,71,0.07);
-  border: 1px solid rgba(232,197,71,0.45);
-  border-radius: 6px; padding: 12px 18px; margin-bottom: 24px;
-  transition: border-color .2s;
+  font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase; color: #E8C547;
 }
-.vibe-bar:focus-within { border-color: rgba(232,197,71,0.8); box-shadow: 0 0 0 3px rgba(232,197,71,0.08); }
-.vibe-icon { font-size: 1.2rem; flex-shrink: 0; }
+.vibe-panel-icon { font-size: 1.1rem; }
+.vibe-panel-badge {
+  background: rgba(232,197,71,0.12); border: 1px solid rgba(232,197,71,0.35);
+  color: #E8C547; font-family: var(--mono); font-size: 0.5rem;
+  letter-spacing: 0.16em; padding: 2px 7px; border-radius: 3px; font-weight: 700;
+}
+.vibe-panel-toggle {
+  background: transparent; border: 1px solid rgba(255,255,255,0.1);
+  color: #555; font-family: var(--mono); font-size: 0.58rem;
+  letter-spacing: 0.1em; padding: 5px 12px; border-radius: 4px;
+  cursor: pointer; transition: all .2s; white-space: nowrap;
+}
+.vibe-panel-toggle:hover,
+.vibe-panel-toggle.open { border-color: rgba(232,197,71,0.4); color: #E8C547; }
+/* Explainer */
+.vibe-explainer {
+  max-height: 0; overflow: hidden;
+  transition: max-height 0.4s cubic-bezier(0.4,0,0.2,1);
+}
+.vibe-explainer.open { max-height: 520px; }
+.vibe-explainer-inner {
+  padding: 18px 20px 6px;
+  border-bottom: 1px solid rgba(232,197,71,0.08);
+}
+.vibe-explain-text {
+  font-size: 0.71rem; color: #999; line-height: 1.7; margin: 0 0 16px;
+}
+.vibe-explain-text strong { color: #E8C547; font-weight: 600; }
+.vibe-pipeline {
+  display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; margin-bottom: 18px;
+}
+.vibe-step {
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px; padding: 10px 14px; text-align: center; min-width: 96px;
+}
+.vibe-step-icon { font-size: 1.15rem; margin-bottom: 4px; }
+.vibe-step-label {
+  font-family: var(--mono); font-size: 0.58rem; font-weight: 700;
+  color: #ddd; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.vibe-step-sub { font-size: 0.54rem; color: #555; margin-top: 3px; font-family: var(--mono); }
+.vibe-arrow { color: #E8C547; font-size: 1rem; opacity: 0.5; flex-shrink: 0; }
+.vibe-examples-label {
+  font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.12em;
+  text-transform: uppercase; color: #444; margin-bottom: 10px;
+}
+.vibe-examples { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 18px; }
+.vibe-example {
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
+  color: #888; font-family: var(--mono); font-size: 0.58rem;
+  letter-spacing: 0.03em; padding: 5px 11px; border-radius: 20px;
+  cursor: pointer; transition: all .18s; white-space: nowrap;
+}
+.vibe-example:hover { border-color: rgba(232,197,71,0.5); color: #E8C547; background: rgba(232,197,71,0.06); }
+/* Search bar */
+.vibe-bar {
+  display: flex; align-items: center; gap: 10px; padding: 14px 20px;
+}
 .vibe-input {
-  flex: 1; background: transparent; border: none; outline: none;
-  color: #fff; font-family: var(--mono); font-size: 0.75rem;
-  letter-spacing: 0.04em;
+  flex: 1; background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.1); border-radius: 6px;
+  outline: none; padding: 10px 14px;
+  color: #fff; font-family: var(--mono); font-size: 0.74rem;
+  letter-spacing: 0.03em; transition: border-color .2s;
 }
-.vibe-input::placeholder { color: #888; }
+.vibe-input:focus { border-color: rgba(232,197,71,0.55); }
+.vibe-input::placeholder { color: #444; }
 .vibe-btn {
-  background: #E8C547; border: none; border-radius: 4px;
+  background: #E8C547; border: none; border-radius: 6px;
   color: #07070A; font-family: var(--mono); font-size: 0.65rem;
   font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
-  padding: 7px 16px; cursor: pointer; flex-shrink: 0; transition: background .2s;
+  padding: 10px 20px; cursor: pointer; flex-shrink: 0; transition: background .2s;
 }
 .vibe-btn:hover { background: #f0d060; }
 .vibe-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .vibe-clear-btn {
-  background: transparent; border: 1px solid rgba(255,255,255,0.15);
-  color: #888; font-family: var(--mono); font-size: 0.62rem;
-  letter-spacing: 0.08em; padding: 6px 12px; border-radius: 4px;
+  background: transparent; border: 1px solid rgba(255,255,255,0.1);
+  color: #555; font-family: var(--mono); font-size: 0.6rem;
+  letter-spacing: 0.08em; padding: 9px 14px; border-radius: 6px;
   cursor: pointer; flex-shrink: 0; transition: all .2s;
 }
-.vibe-clear-btn:hover { border-color: #aaa; color: #ccc; }
+.vibe-clear-btn:hover { border-color: #888; color: #bbb; }
 .vibe-results-label {
   color: var(--gold); font-family: var(--mono); font-size: 0.65rem;
   letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;
 }
 .vibe-divider {
-  text-align: center; color: #333; font-family: var(--mono);
+  text-align: center; color: #2a2a2a; font-family: var(--mono);
   font-size: 0.6rem; letter-spacing: 0.15em; margin: 24px 0 16px;
 }
 .vibe-match-pct {
@@ -2042,15 +2113,77 @@ body:has(.dc:hover) #cursor-ring {
 <!-- ── DISCOVER TAB ── -->
 <div id="tab-disc" style="display:none">
 
-  <!-- ── VIBE SEARCH BAR ── -->
-  <div class="vibe-bar">
-    <span class="vibe-icon">🔮</span>
-    <input id="vibe-input" class="vibe-input"
-      placeholder="Vibe search… e.g. 'mind-bending sci-fi with a twist ending'"
-      autocomplete="off" spellcheck="false"/>
-    <button class="vibe-btn" id="vibe-btn" onclick="vibeSearch()">Search</button>
-    <button class="vibe-clear-btn" id="vibe-clear-btn" onclick="vibeClear()" style="display:none">✕ Clear</button>
-  </div>
+  <!-- ── VIBE SEARCH PANEL ── -->
+  <div class="vibe-panel">
+
+    <!-- Header -->
+    <div class="vibe-panel-header">
+      <div class="vibe-panel-title">
+        <span class="vibe-panel-icon">🔮</span>
+        <span>Vibe Search</span>
+        <span class="vibe-panel-badge">AI · Semantic</span>
+      </div>
+      <button class="vibe-panel-toggle" id="vibe-toggle-btn"
+        onclick="toggleVibeExplainer(this)">How it works ↓</button>
+    </div>
+
+    <!-- Collapsible explainer -->
+    <div class="vibe-explainer" id="vibe-explainer">
+      <div class="vibe-explainer-inner">
+        <p class="vibe-explain-text">
+          Unlike keyword search, Vibe Search <strong>understands meaning</strong> —
+          describe a mood, feeling, plot, or theme in plain English and it finds the
+          closest matches across all 4000+ titles using AI embeddings.
+        </p>
+        <div class="vibe-pipeline">
+          <div class="vibe-step">
+            <div class="vibe-step-icon">✍️</div>
+            <div class="vibe-step-label">Your query</div>
+            <div class="vibe-step-sub">plain English</div>
+          </div>
+          <div class="vibe-arrow">→</div>
+          <div class="vibe-step">
+            <div class="vibe-step-icon">🧠</div>
+            <div class="vibe-step-label">Gemini AI</div>
+            <div class="vibe-step-sub">3072-dim vector</div>
+          </div>
+          <div class="vibe-arrow">→</div>
+          <div class="vibe-step">
+            <div class="vibe-step-icon">📐</div>
+            <div class="vibe-step-label">Cosine similarity</div>
+            <div class="vibe-step-sub">vs all 4k titles</div>
+          </div>
+          <div class="vibe-arrow">→</div>
+          <div class="vibe-step">
+            <div class="vibe-step-icon">🎯</div>
+            <div class="vibe-step-label">Top matches</div>
+            <div class="vibe-step-sub">ranked by % match</div>
+          </div>
+        </div>
+        <div class="vibe-examples-label">Try these →</div>
+        <div class="vibe-examples">
+          <button class="vibe-example" onclick="useVibeExample(this)">mind-bending sci-fi with a twist ending</button>
+          <button class="vibe-example" onclick="useVibeExample(this)">feel-good comedy to watch with family</button>
+          <button class="vibe-example" onclick="useVibeExample(this)">dark psychological thriller, slow burn</button>
+          <button class="vibe-example" onclick="useVibeExample(this)">based on true events, crime investigation</button>
+          <button class="vibe-example" onclick="useVibeExample(this)">epic fantasy with magic and war</button>
+          <button class="vibe-example" onclick="useVibeExample(this)">romantic drama that will make me cry</button>
+          <button class="vibe-example" onclick="useVibeExample(this)">something like Inception or Interstellar</button>
+          <button class="vibe-example" onclick="useVibeExample(this)">underdog sports story, very motivating</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Search bar -->
+    <div class="vibe-bar">
+      <input id="vibe-input" class="vibe-input"
+        placeholder="Describe a mood, genre, plot, or feeling…"
+        autocomplete="off" spellcheck="false"/>
+      <button class="vibe-btn" id="vibe-btn" onclick="vibeSearch()">Search</button>
+      <button class="vibe-clear-btn" id="vibe-clear-btn" onclick="vibeClear()" style="display:none">✕ Clear</button>
+    </div>
+
+  </div><!-- /vibe-panel -->
   <div id="vibe-results-section" style="display:none">
     <div class="vibe-results-label">✨ Semantic matches for "<span id="vibe-query-label"></span>"</div>
     <div class="disc-grid" id="vibe-grid"></div>
@@ -2127,6 +2260,9 @@ body:has(.dc:hover) #cursor-ring {
 /* ── DATA ── */
 const W = __WJ__;
 const D = __DJ__;
+
+// Run once on load — badge shows immediately when page renders
+window.addEventListener('DOMContentLoaded', _updateDiscTabBadge);
 
 /* ── PLATFORM COLORS ── */
 const PC = {
@@ -2771,6 +2907,7 @@ function getFD() {
 function renderDisc() {
   const data = getFD();
   renderStats(D, 'ds', true);
+  _updateDiscTabBadge();
   const el = document.getElementById('dg');
   if (!data.length) {
     const catLabel = dCat !== 'all' ? ` in <b>${CL[dCat] || dCat}</b>` : '';
@@ -3089,6 +3226,44 @@ function _makeVibeCard(d, i) {
     }
   </div>
 </div>`;
+}
+
+/* ── VIBE PANEL HELPERS ── */
+function toggleVibeExplainer(btn) {
+  const el = document.getElementById('vibe-explainer');
+  if (!el) return;
+  const open = el.classList.toggle('open');
+  btn.classList.toggle('open', open);
+  btn.textContent = open ? 'How it works ↑' : 'How it works ↓';
+}
+
+function useVibeExample(btn) {
+  const inp = document.getElementById('vibe-input');
+  if (inp) { inp.value = btn.textContent; inp.focus(); }
+  document.querySelectorAll('.vibe-example').forEach(b => {
+    b.style.borderColor = ''; b.style.color = '';
+  });
+  btn.style.borderColor = 'rgba(232,197,71,0.8)';
+  btn.style.color = '#E8C547';
+  setTimeout(() => { btn.style.borderColor = ''; btn.style.color = ''; }, 1400);
+}
+
+/* ── DISCOVER TAB BADGE — shows count of leaving-soon titles ── */
+function _updateDiscTabBadge() {
+  const count = D.filter(d => {
+    const days = _daysUntil(d.leaving_date);
+    return days !== null && days >= 0 && days <= 30;
+  }).length;
+  const btn = document.querySelector('.tab[onclick*="disc"]');
+  if (!btn) return;
+  // Strip any previous badge before re-rendering
+  btn.innerHTML = btn.textContent.replace(/\s*\(\d+\)/, '').trim();
+  if (count > 0) {
+    btn.innerHTML = `Discover <span style="
+      background:#FF4455;color:#fff;font-size:0.48rem;font-weight:700;
+      padding:1px 5px;border-radius:8px;margin-left:5px;
+      vertical-align:middle;letter-spacing:0.06em;">${count}</span>`;
+  }
 }
 
 async function vibeSearch() {
