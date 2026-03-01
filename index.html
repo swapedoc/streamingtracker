@@ -1972,7 +1972,7 @@ function renderStats(data, elId, isDisc) {
     const pol   = data.filter(d=>d.polarizing).length;
     const revs  = data.reduce((s,d)=>s+d.reviews,0);
     items = [
-      { n: data.length, l: 'Titles',        c: '#F5F5F0', fn: "window._wFilter=null;_schedW(renderWatch);setSribActive('ws',0)" },
+      { n: data.length, l: 'Titles',        c: '#F5F5F0', fn: "window._wFilter=null;renderWatch();setSribActive('ws',0)" },
       { n: avg,         l: 'Avg Score',      c: '#E8C547' },
       { n: worth,       l: 'Worth Watching', c: '#8CB4CC', fn: "wWorth();setSribActive('ws',2)" },
       { n: pol,         l: 'Polarising',     c: '#FF4455', fn: "wPolar();setSribActive('ws',3)" },
@@ -2498,7 +2498,10 @@ function renderDisc() {
 
 function sC(v,b) {
   dCat=v;
-  document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on',x===b));
+  // b is the clicked button element, or null when called from stats ribbon
+  // Either way, highlight the pill whose data-c matches v
+  const target = b || document.querySelector(`[data-c="${CSS.escape(v)}"]`);
+  document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on', x===target));
   _schedD(renderDisc);
 }
 function sdP(v,b) { dPlat=v; document.querySelectorAll('[data-dp]').forEach(x=>x.classList.toggle('on',x===b)); _schedD(renderDisc); }
