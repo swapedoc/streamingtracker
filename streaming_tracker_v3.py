@@ -510,7 +510,8 @@ class TMDbResolver:
                 return preferred
         return matched[0]
 
-    def get_runtime_and_trailer(self, tmdb_id: int, media_type: str) -> dict:
+    def get_runtime_and_trailer(self, tmdb_id: int, media_type: str,
+                                title: str = None, year: int = None) -> dict:
         """
         Fetch runtime details + official trailer ID in two parallel calls.
 
@@ -520,11 +521,17 @@ class TMDbResolver:
           episode_count   – total episodes (TV) or None
           episode_runtime – minutes per episode (TV) or None
           trailer_id      – YouTube video ID of the official trailer, or None
+
+        title / year are optional — used only for the YouTube fallback search
+        when TMDb /videos returns nothing.
         """
         result = {
             'runtime': None, 'seasons': None,
             'episode_count': None, 'episode_runtime': None,
             'trailer_id': None,
+            # Internal fields stripped before return:
+            '_title': title,
+            '_year':  year,
         }
         mt = 'movie' if media_type != 'tv' else 'tv'
 
@@ -584,7 +591,139 @@ class TMDbResolver:
         except Exception:
             pass
 
+        # ── YouTube API fallback — only fires when TMDb has no trailer ───────
+        # Costs 100 YouTube quota units per call, so guarded behind a title arg.
+        if not result['trailer_id'] and result.get('_title'):
+            yt_id = self._youtube_trailer_fallback(
+                result.pop('_title'), result.get('_year')
+            )
+            if yt_id:
+                result['trailer_id'] = yt_id
+                result['_yt_fallback'] = True
+        else:
+            result.pop('_title', None)
+        result.pop('_year', None)
+
         return result
+
+    # Trusted official channels — channel IDs that reliably host real trailers.
+    # Partial lowercase name matches are used as a fast pre-filter before the
+    # channel-ID allowlist, catching channels like "Sony Pictures India" that
+    # share a root with the verified parent.
+    _TRUSTED_CHANNEL_NAMES = {
+        'netflix', 'prime video', 'amazon prime',
+        'apple tv', 'disney', 'hotstar',
+        'sony pictures', 'warner bros', 'universal pictures',
+        'paramount', 'lionsgate', 'a24',
+        'marvel', 'dc', 'mgm',
+        'mubi', 'ign', 'filmspot trailer',
+        'zee studios', 'yash raj films', 'dharma productions',
+        't-series', 'pen movies', 'eros now',
+        'jiocinema', 'hulu', 'hbo',
+    }
+
+    # Hard-verified channel IDs for the most important distributors.
+    # These catch channels whose *display name* is ambiguous (e.g. "Trailers").
+    _TRUSTED_CHANNEL_IDS = {
+        'UCWX3yGbOBE3mMSBSCVDzK4g',  # Netflix
+        'UCTOxLBzMBCEFTEMF7DqhAsg',  # Netflix India
+        'UC_IRUbMCnBQh5X5hTLjWLpA',  # Prime Video
+        'UCmEDwvvN9LiRh0dMjB8RWLA',  # Prime Video India
+        'UCzWQYUVCpZqtN93H8RR44Qw',  # Apple TV+
+        'UC9-y-6csu5WGm29I7JiwpnA',  # Computerphile (safety — won't match trailers)
+        'UCi8e0iOVk1fEOogdfu4YgfA',  # Disney+
+        'UCF9imwbTCaZCOcuZnWTFBkA',  # JioCinema
+        'UCvC4D8onUfXzvjTOM-dBfEA',  # Warner Bros. Pictures
+        'UCjmJDM5pRKbUlVIzDYwz-1A',  # Universal Pictures
+        'UCaw03IoN618hT5-bXu6LoAA',  # Paramount Pictures
+        'UCYLbpjXO5BwstZXhBpqECRg',  # Lionsgate Movies
+        'UCgMPP6RejnQEoEX-bwOFZLA',  # A24
+        'UCR_Gp53bEfFTL2W6VLMJ15g',  # Sony Pictures Entertainment
+        'UCWX3yGbOBE3mMSBSCVDzK4g',  # Yash Raj Films
+        'UCFFbwnve3yF62-tVXkTyHqg',  # T-Series
+        'UC9zY_E8mcAo_Oq772LEZq8Q',  # Dharma Productions
+        'UCiEEF51uRAeZeCo8CJFhGWw',  # Zee Studios
+    }
+
+    def _youtube_trailer_fallback(self, title: str, year: int = None) -> str | None:
+        """
+        Search YouTube for an official trailer when TMDb /videos returns nothing.
+
+        Strategy:
+          1. Query: '{title} {year} official trailer'
+          2. Accept top result ONLY if it comes from a trusted channel
+             (name substring match OR channel ID allowlist).
+          3. Hard-reject anything with 'reaction', 'review', 'fan-made',
+             'breakdown', 'explained', 'analysis', 'ranked' in the title —
+             these are the most common false positives.
+
+        Quota cost: 100 units per call (YouTube Data API v3 search).
+        Only called when TMDb has no trailer, so real-world hit rate is low.
+        """
+        yt_key = Config.YOUTUBE_API_KEY
+        if not yt_key:
+            return None
+
+        query = f"{title} {year} official trailer" if year else f"{title} official trailer"
+
+        # Words that indicate it's NOT an official trailer
+        REJECT_WORDS = {
+            'reaction', 'review', 'fan made', 'fan-made', 'breakdown',
+            'explained', 'analysis', 'ranked', 'every scene', 'all scenes',
+            'deleted', 'behind the scenes', 'making of', 'interview',
+            'featurette', 'clip', 'scene', 'spoiler',
+        }
+
+        try:
+            r = self._session.get(
+                'https://www.googleapis.com/youtube/v3/search',
+                params={
+                    'part':       'snippet',
+                    'q':          query,
+                    'type':       'video',
+                    'maxResults': 5,          # fetch 5, pick best trusted one
+                    'order':      'relevance',
+                    'key':        yt_key,
+                },
+                timeout=10,
+            )
+            if r.status_code == 403:
+                # Quota exhausted — fail silently, don't spam logs
+                return None
+            if not r.ok:
+                return None
+
+            items = r.json().get('items', [])
+            for item in items:
+                vid_id      = item.get('id', {}).get('videoId', '')
+                snippet     = item.get('snippet', {})
+                vid_title   = snippet.get('title', '').lower()
+                channel     = snippet.get('channelTitle', '').lower()
+                channel_id  = snippet.get('channelId', '')
+
+                if not vid_id:
+                    continue
+
+                # Hard-reject non-trailer content
+                if any(w in vid_title for w in REJECT_WORDS):
+                    continue
+
+                # Must contain 'trailer' or 'teaser' somewhere in the video title
+                if 'trailer' not in vid_title and 'teaser' not in vid_title:
+                    continue
+
+                # Accept if channel name contains a trusted substring OR
+                # channel ID is in our verified allowlist
+                name_trusted = any(t in channel for t in self._TRUSTED_CHANNEL_NAMES)
+                id_trusted   = channel_id in self._TRUSTED_CHANNEL_IDS
+
+                if name_trusted or id_trusted:
+                    return vid_id
+
+            return None   # nothing trusted found
+
+        except Exception:
+            return None
 
 # ============================================================================
 # DISCOVER FLOW - NO REVIEWS, JUST AVAILABILITY
@@ -3188,15 +3327,21 @@ class AsyncWatchNowPipeline:
                 asyncio.get_running_loop().run_in_executor(self._executor, self._critics_sync,
                                      content_id, title, media_type, year, is_hindi),
                 asyncio.get_running_loop().run_in_executor(self._executor,
-                                     self.tmdb.get_runtime_and_trailer, tmdb_id, media_type),
+                                     self.tmdb.get_runtime_and_trailer, tmdb_id, media_type,
+                                     title, year),
                 return_exceptions=True
             )
 
             # Patch content row with runtime + trailer if we got them
             if isinstance(details, dict) and any(v is not None for v in details.values()):
                 try:
+                    yt_fallback = details.pop('_yt_fallback', False)
                     self.db.table('content').update(details).eq('id', content_id).execute()
-                    trailer_note = f" 🎬 trailer={details['trailer_id'][:8]}.." if details.get('trailer_id') else ''
+                    yt_fallback = details.get('_yt_fallback', False)
+                    trailer_note = ''
+                    if details.get('trailer_id'):
+                        src = '🔍 YT fallback' if yt_fallback else '🎬 TMDb'
+                        trailer_note = f" {src}={details['trailer_id'][:8]}.."
                     runtime_note = ''
                     if details.get('runtime'):
                         h, m = divmod(details['runtime'], 60)
@@ -3605,7 +3750,7 @@ def _enrich_discover_details():
     all_rows = []
     for start in range(0, 50000, 1000):
         page = db.table('discover_content').select(
-            'id, tmdb_id, content_type, trailer_id, runtime, episode_runtime'
+            'id, tmdb_id, title, release_year, content_type, trailer_id, runtime, episode_runtime'
         ).range(start, start + 999).execute()
         if not page.data:
             break
@@ -3658,8 +3803,14 @@ def _enrich_discover_details():
     errors  = 0
 
     def _enrich_one(row):
-        details = tmdb.get_runtime_and_trailer(row['tmdb_id'], row['content_type'])
+        details = tmdb.get_runtime_and_trailer(
+            row['tmdb_id'], row['content_type'],
+            title=row.get('title'), year=row.get('release_year'),
+        )
+        details.pop('_yt_fallback', None)   # internal flag — not a DB column
         if any(v is not None for v in details.values()):
+            if details.get('trailer_id'):
+                print(f"   🔍 YT fallback trailer: {row.get('title','?')[:45]}")
             db.table('discover_content').update(details).eq('id', row['id']).execute()
         return details
 
