@@ -1556,7 +1556,7 @@ function _safe(v) {
 }
 
 // ── CACHE HELPERS ────────────────────────────────────────────────────────
-const CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours in ms
+const CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours in ms — matches Python run frequency
 const CACHE_KEY_W = 'streamiq_W';
 const CACHE_KEY_D = 'streamiq_D';
 const CACHE_KEY_TS = 'streamiq_ts';
@@ -1599,8 +1599,25 @@ async function loadData() {
     renderDiscPills();
     renderDisc();
     _updateDiscTabBadge();
-    // Refresh cache silently in background — user already sees content
-    _loadFromNetwork(true);
+    // Only re-fetch if server data is newer than our cache
+    try {
+      const { data, error } = await supabase
+        .from('sync_state')
+        .select('last_updated')
+        .single();
+
+      if (!error && data) {
+        const serverTs = new Date(data.last_updated).getTime();
+        const cacheTs  = parseInt(localStorage.getItem(CACHE_KEY_TS) || '0');
+        if (serverTs > cacheTs) {
+          _loadFromNetwork(true);
+        }
+        // else: cache is fresh — skip the heavy fetch entirely
+      }
+    } catch(e) {
+      // If ping fails, fall back to fetching anyway
+      _loadFromNetwork(true);
+    }
     return;
   }
 
