@@ -1319,6 +1319,7 @@ body:has(.dc:hover) #cursor-ring {
     <div class="logo-sub">
       <span class="pulse-dot">Live</span>
       &nbsp;Streaming Intelligence
+      &nbsp;·&nbsp;🇮🇳&nbsp;Made in India for Indians
     </div>
   </div>
   <div class="mast-right">
@@ -1608,61 +1609,88 @@ async function loadData() {
     console.error('Watch Now load error:', e);
   }
 
-  // ── Discover: paginate through all rows ──────────────────────────────────
+  // ── Render Watch Now immediately — don't wait for Discover ──────────────
+  rebuildWIdxMap();
+  renderWatchGenrePills();
+  renderWatch();
+
+  // ── Discover: fetch all pages in parallel, then render ───────────────────
   const DISC_COLS = 'id,tmdb_id,title,platform,content_type,release_year,imdb_rating,' +
     'poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,' +
     'popularity,runtime,seasons,episode_count,episode_runtime,leaving_date';
   const PAGE = 1000;
-  let offset = 0;
-  D = [];
+
+  function _parseDiscBatch(batch) {
+    return batch.map(r => ({
+      title:         _safe(r.title),
+      platform:      _safe(r.platform),
+      type:          _safe(r.content_type),
+      year:          _safe(r.release_year),
+      rating:        parseFloat(r.imdb_rating) || 0,
+      poster:        _safe(r.poster_path),
+      category:      _safe(r.category),
+      genre:         _safe(r.genre),
+      tv_genre:      _safe(r.tv_genre),
+      tmdb_id:       _safe(r.tmdb_id),
+      stream_url:    _safe(r.stream_url),
+      hindi_dub:     !!r.hindi_dub,
+      binge:         _vibeBinge(r),
+      trailer_id:    _safe(r.trailer_id),
+      leaving_date:  _safe(r.leaving_date),
+      content_type:  _safe(r.content_type),
+      runtime:       r.runtime,
+      seasons:       r.seasons,
+      episode_count: r.episode_count,
+      episode_runtime: r.episode_runtime,
+    }));
+  }
+
   try {
-    while (true) {
-      const dr = await fetch(
-        `${SUPA_URL}/rest/v1/discover_content?select=${DISC_COLS}` +
-        `&order=popularity.desc&offset=${offset}&limit=${PAGE}`,
-        { headers }
+    // Fetch page 1 first to know total size, then fire remaining pages in parallel
+    const firstRes = await fetch(
+      `${SUPA_URL}/rest/v1/discover_content?select=${DISC_COLS}&order=popularity.desc&offset=0&limit=${PAGE}`,
+      { headers }
+    );
+    const firstBatch = await firstRes.json();
+    D = Array.isArray(firstBatch) ? _parseDiscBatch(firstBatch) : [];
+
+    // Render Discover with first 1000 rows immediately — user sees content fast
+    renderDiscPills();
+    renderDisc();
+    _updateDiscTabBadge();
+
+    // If there are more pages, fetch them all simultaneously
+    if (Array.isArray(firstBatch) && firstBatch.length === PAGE) {
+      const offsets = [];
+      for (let off = PAGE; off < 20000; off += PAGE) offsets.push(off);
+
+      const remaining = await Promise.all(
+        offsets.map(off =>
+          fetch(
+            `${SUPA_URL}/rest/v1/discover_content?select=${DISC_COLS}&order=popularity.desc&offset=${off}&limit=${PAGE}`,
+            { headers }
+          ).then(r => r.json()).catch(() => [])
+        )
       );
-      const batch = await dr.json();
-      if (!Array.isArray(batch) || !batch.length) break;
-      batch.forEach(r => {
-        D.push({
-          title:         _safe(r.title),
-          platform:      _safe(r.platform),
-          type:          _safe(r.content_type),
-          year:          _safe(r.release_year),
-          rating:        parseFloat(r.imdb_rating) || 0,
-          poster:        _safe(r.poster_path),
-          category:      _safe(r.category),
-          genre:         _safe(r.genre),
-          tv_genre:      _safe(r.tv_genre),
-          tmdb_id:       _safe(r.tmdb_id),
-          stream_url:    _safe(r.stream_url),
-          hindi_dub:     !!r.hindi_dub,
-          binge:         _vibeBinge(r),
-          trailer_id:    _safe(r.trailer_id),
-          leaving_date:  _safe(r.leaving_date),
-          // raw for _vibeBinge
-          content_type:  _safe(r.content_type),
-          runtime:       r.runtime,
-          seasons:       r.seasons,
-          episode_count: r.episode_count,
-          episode_runtime: r.episode_runtime,
-        });
-      });
-      if (batch.length < PAGE) break;
-      offset += PAGE;
+
+      let gotAny = false;
+      for (const batch of remaining) {
+        if (!Array.isArray(batch) || !batch.length) break;
+        D.push(..._parseDiscBatch(batch));
+        gotAny = true;
+        if (batch.length < PAGE) break;
+      }
+
+      // Re-render Discover with full dataset
+      if (gotAny) {
+        renderDiscPills();
+        renderDisc();
+        _updateDiscTabBadge();
+      }
     }
   } catch(e) {
     console.error('Discover load error:', e);
   }
-
-  // Render everything now that data is loaded
-  rebuildWIdxMap();
-  renderWatchGenrePills();
-  renderWatch();
-  renderDiscPills();
-  renderDisc();
-  _updateDiscTabBadge();
 }
 
 // Data loads async — loadData() calls render functions when ready
