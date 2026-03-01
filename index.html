@@ -1614,6 +1614,9 @@ async function loadData() {
   renderWatchGenrePills();
   renderWatch();
 
+  // Restore panel if user landed on a deep-link URL (e.g. shared #movie-1234)
+  _restoreHashPanel();
+
   // ── Discover: fetch all pages in parallel, then render ───────────────────
   const DISC_COLS = 'id,tmdb_id,title,platform,content_type,release_year,imdb_rating,' +
     'poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,' +
@@ -2219,13 +2222,22 @@ function openPanel(d, clickedEl) {
   panelEl.classList.add('on');
   overlayEl.classList.add('on');
   document.body.style.overflow = 'hidden';
+
+  // Push URL hash so the browser Back button closes the panel instead of exiting the app
+  const hashId = d.tmdb_id ? `movie-${d.tmdb_id}` : `movie-${encodeURIComponent(d.title)}`;
+  window.history.pushState({ panelOpen: true, hashId }, '', `#${hashId}`);
 }
 
-function closeP() {
+function closeP(fromPopstate) {
   const p = document.getElementById('panel');
   p.classList.remove('on');
   document.getElementById('overlay').classList.remove('on');
   document.body.style.overflow = '';
+  // Clean up URL hash — but only if WE are closing, not the popstate handler
+  // (avoids double history entry)
+  if (!fromPopstate && window.location.hash.startsWith('#movie-')) {
+    window.history.pushState(null, '', window.location.pathname);
+  }
   // Stop trailer if playing
   const iframe = document.getElementById('pp-trailer-iframe');
   if (iframe) { iframe.src = ''; }
@@ -2262,6 +2274,24 @@ function toggleTrailer(videoId) {
   }
 }
 document.addEventListener('keydown', e => { if (e.key==='Escape') closeP(); });
+
+// ── BACK BUTTON — close panel instead of exiting the app ─────────────────
+window.addEventListener('popstate', () => {
+  const panel = document.getElementById('panel');
+  if (panel && panel.classList.contains('on')) {
+    closeP(true); // pass true = called from popstate, skip extra history push
+  }
+});
+
+// ── DEEP LINK RESTORE — if user shares/bookmarks a #movie-1234 URL ────────
+function _restoreHashPanel() {
+  const hash = window.location.hash;
+  if (!hash.startsWith('#movie-')) return;
+  const id = hash.slice('#movie-'.length);
+  const found = W.find(d => d.tmdb_id && String(d.tmdb_id) === id)
+             || W.find(d => encodeURIComponent(d.title) === id);
+  if (found) openPanel(found, null);
+}
 
 /* ── FILTER HANDLERS ── */
 function sP(v,b) { wPlat=v; document.querySelectorAll('[data-p]').forEach(x=>x.classList.toggle('on',x===b)); renderWatch(); }
