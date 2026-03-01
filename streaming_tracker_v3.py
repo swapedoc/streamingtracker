@@ -516,16 +516,12 @@ class TMDbResolver:
                 return preferred
         return matched[0]
 
-    def get_runtime_and_trailer(self, tmdb_id: int, media_type: str) -> dict:
+    def get_runtime_and_trailer(self, tmdb_id: int, media_type: str,
+                                title: str = None, year: int = None) -> dict:
         """
-        Fetch runtime details + official trailer ID in two parallel calls.
-
-        Returns a dict ready to merge into a content row:
-          runtime         – total minutes (movies) or None (TV)
-          seasons         – number of seasons (TV) or None (movies)
-          episode_count   – total episodes (TV) or None
-          episode_runtime – minutes per episode (TV) or None
-          trailer_id      – YouTube video ID of the official trailer, or None
+        Fetch runtime details + official trailer ID.
+        title/year are optional — used only for the YouTube fallback when
+        TMDb /videos returns nothing.
         """
         result = {
             'runtime': None, 'seasons': None,
@@ -548,12 +544,6 @@ class TMDbResolver:
                 else:
                     result['seasons']       = data.get('number_of_seasons') or None
                     result['episode_count'] = data.get('number_of_episodes') or None
-
-                    # TMDb's episode_run_time is unreliable — often empty or [0].
-                    # Fallback chain:
-                    #   1. episode_run_time array (filter out zeros)
-                    #   2. last_episode_to_air.runtime  (most accurate for current season)
-                    #   3. next_episode_to_air.runtime  (rare but sometimes populated)
                     ep_rt = None
                     er = [x for x in (data.get('episode_run_time') or []) if x and x > 0]
                     if er:
@@ -577,7 +567,6 @@ class TMDbResolver:
             )
             if r.status_code == 200:
                 videos = r.json().get('results', [])
-                # Priority: official Trailer on YouTube, then Teaser
                 for vtype in ('Trailer', 'Teaser'):
                     for v in videos:
                         if (v.get('site') == 'YouTube'
@@ -590,7 +579,77 @@ class TMDbResolver:
         except Exception:
             pass
 
+        # ── YouTube fallback — only fires when TMDb has no trailer ────────
+        if not result['trailer_id'] and title:
+            yt_id = self._youtube_trailer_fallback(title, year)
+            if yt_id:
+                result['trailer_id']   = yt_id
+                result['_yt_fallback'] = True  # stripped before DB write
+
         return result
+
+    _TRUSTED_CHANNEL_NAMES = {
+        'netflix', 'prime video', 'amazon prime', 'apple tv', 'disney',
+        'hotstar', 'sony pictures', 'warner bros', 'universal pictures',
+        'paramount', 'lionsgate', 'a24', 'marvel', 'dc', 'mgm', 'mubi',
+        'ign', 'filmspot trailer', 'zee studios', 'yash raj films',
+        'dharma productions', 't-series', 'pen movies', 'eros now',
+        'jiocinema', 'hulu', 'hbo',
+    }
+    _TRUSTED_CHANNEL_IDS = {
+        'UCWX3yGbOBE3mMSBSCVDzK4g', 'UCTOxLBzMBCEFTEMF7DqhAsg',
+        'UC_IRUbMCnBQh5X5hTLjWLpA', 'UCmEDwvvN9LiRh0dMjB8RWLA',
+        'UCzWQYUVCpZqtN93H8RR44Qw', 'UCi8e0iOVk1fEOogdfu4YgfA',
+        'UCF9imwbTCaZCOcuZnWTFBkA', 'UCvC4D8onUfXzvjTOM-dBfEA',
+        'UCjmJDM5pRKbUlVIzDYwz-1A', 'UCaw03IoN618hT5-bXu6LoAA',
+        'UCYLbpjXO5BwstZXhBpqECRg', 'UCgMPP6RejnQEoEX-bwOFZLA',
+        'UCR_Gp53bEfFTL2W6VLMJ15g', 'UCFFbwnve3yF62-tVXkTyHqg',
+        'UC9zY_E8mcAo_Oq772LEZq8Q', 'UCiEEF51uRAeZeCo8CJFhGWw',
+    }
+
+    def _youtube_trailer_fallback(self, title: str, year: int = None):
+        """Search YouTube for an official trailer from a trusted channel."""
+        yt_key = Config.YOUTUBE_API_KEY
+        if not yt_key:
+            return None
+        query = f"{title} {year} official trailer" if year else f"{title} official trailer"
+        REJECT = {
+            'reaction', 'review', 'fan made', 'fan-made', 'breakdown',
+            'explained', 'analysis', 'ranked', 'every scene', 'deleted',
+            'behind the scenes', 'making of', 'interview', 'featurette',
+            'clip', 'scene', 'spoiler',
+        }
+        try:
+            r = self._session.get(
+                'https://www.googleapis.com/youtube/v3/search',
+                params={
+                    'part': 'snippet', 'q': query, 'type': 'video',
+                    'maxResults': 5, 'order': 'relevance', 'key': yt_key,
+                },
+                timeout=10,
+            )
+            if r.status_code == 403:
+                return None
+            if not r.ok:
+                return None
+            for item in r.json().get('items', []):
+                vid_id     = item.get('id', {}).get('videoId', '')
+                snippet    = item.get('snippet', {})
+                vid_title  = snippet.get('title', '').lower()
+                channel    = snippet.get('channelTitle', '').lower()
+                channel_id = snippet.get('channelId', '')
+                if not vid_id:
+                    continue
+                if any(w in vid_title for w in REJECT):
+                    continue
+                if 'trailer' not in vid_title and 'teaser' not in vid_title:
+                    continue
+                if any(t in channel for t in self._TRUSTED_CHANNEL_NAMES) \
+                        or channel_id in self._TRUSTED_CHANNEL_IDS:
+                    return vid_id
+            return None
+        except Exception:
+            return None
 
 # ============================================================================
 # DISCOVER FLOW - NO REVIEWS, JUST AVAILABILITY
@@ -3194,15 +3253,20 @@ class AsyncWatchNowPipeline:
                 asyncio.get_running_loop().run_in_executor(self._executor, self._critics_sync,
                                      content_id, title, media_type, year, is_hindi),
                 asyncio.get_running_loop().run_in_executor(self._executor,
-                                     self.tmdb.get_runtime_and_trailer, tmdb_id, media_type),
+                                     self.tmdb.get_runtime_and_trailer, tmdb_id, media_type,
+                                     title, year),
                 return_exceptions=True
             )
 
             # Patch content row with runtime + trailer if we got them
             if isinstance(details, dict) and any(v is not None for v in details.values()):
                 try:
+                    yt_fallback = details.pop('_yt_fallback', False)
                     self.db.table('content').update(details).eq('id', content_id).execute()
-                    trailer_note = f" 🎬 trailer={details['trailer_id'][:8]}.." if details.get('trailer_id') else ''
+                    trailer_note = ''
+                    if details.get('trailer_id'):
+                        src = '🔍YT' if yt_fallback else '🎬TMDb'
+                        trailer_note = f" {src}={details['trailer_id'][:8]}.."
                     runtime_note = ''
                     if details.get('runtime'):
                         h, m = divmod(details['runtime'], 60)
@@ -3631,7 +3695,7 @@ def _enrich_discover_details():
     all_rows = []
     for start in range(0, 50000, 1000):
         page = db.table('discover_content').select(
-            'id, tmdb_id, content_type, trailer_id, runtime, episode_runtime'
+            'id, tmdb_id, title, release_year, content_type, trailer_id, runtime, episode_runtime'
         ).range(start, start + 999).execute()
         if not page.data:
             break
@@ -3684,8 +3748,14 @@ def _enrich_discover_details():
     errors  = 0
 
     def _enrich_one(row):
-        details = tmdb.get_runtime_and_trailer(row['tmdb_id'], row['content_type'])
+        details = tmdb.get_runtime_and_trailer(
+            row['tmdb_id'], row['content_type'],
+            title=row.get('title'), year=row.get('release_year'),
+        )
+        yt_fallback = details.pop('_yt_fallback', False)
         if any(v is not None for v in details.values()):
+            if yt_fallback:
+                print(f"   🔍 YT fallback: {row.get('title','?')[:45]}")
             db.table('discover_content').update(details).eq('id', row['id']).execute()
         return details
 
