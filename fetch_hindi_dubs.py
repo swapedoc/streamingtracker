@@ -9,6 +9,12 @@ SETUP:
 USAGE:
   python3 fetch_hindi_dubs.py
 
+ENV VARS (in .env):
+  Required:  SUPABASE_URL, SUPABASE_KEY
+  Optional:  TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+             — if set, you'll receive a Telegram alert the moment
+               JustWatch changes their GraphQL schema.
+
 SUPABASE SETUP (run once in Supabase SQL editor):
   ALTER TABLE content          ADD COLUMN IF NOT EXISTS hindi_dub BOOLEAN DEFAULT FALSE;
   ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS hindi_dub BOOLEAN DEFAULT FALSE;
@@ -25,11 +31,114 @@ from supabase import create_client
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-GQL          = 'https://apis.justwatch.com/graphql'
+SUPABASE_URL      = os.getenv('SUPABASE_URL')
+SUPABASE_KEY      = os.getenv('SUPABASE_KEY')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')   # optional — set to enable alerts
+TELEGRAM_CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID')     # optional — your chat ID
+GQL               = 'https://apis.justwatch.com/graphql'
 
 MAX_WORKERS = 20
+
+# Ensures only one schema-change Telegram alert fires per run, even with 20 concurrent workers.
+_schema_alert_sent = threading.Event()
+
+
+# ── Schema validation + alerting ─────────────────────────────────────────────
+
+def _send_telegram_alert(message: str):
+    """Fire a Telegram message if credentials are configured. Never raises.
+    Deduplicates: only the first schema error per run sends an alert.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    # Only send once per run — prevents alert storm if schema breaks mid-batch
+    if _schema_alert_sent.is_set():
+        return
+    _schema_alert_sent.set()
+    try:
+        requests.post(
+            f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage',
+            json={'chat_id': TELEGRAM_CHAT_ID, 'text': f'🚨 StreamIQ — {message}'},
+            timeout=10,
+        )
+    except Exception:
+        pass  # alerting should never crash the main script
+
+
+class SchemaError(Exception):
+    """Raised when a JustWatch response is missing expected keys."""
+
+
+def _validate_search_response(data: dict) -> list:
+    """
+    Validates the search response and returns the edges list.
+    Raises SchemaError with a descriptive message if the shape has changed.
+    """
+    if not isinstance(data, dict):
+        raise SchemaError(f"Expected dict, got {type(data).__name__}")
+
+    gql_data = data.get('data')
+    if not isinstance(gql_data, dict):
+        raise SchemaError(f"Missing 'data' key — top-level keys: {list(data.keys())}")
+
+    popular = gql_data.get('popularTitles')
+    # popularTitles=null means the search service returned nothing (e.g. service hiccup),
+    # not a schema change. Distinguish key-absent (schema break) from key-null (empty result).
+    if popular is None:
+        if 'popularTitles' not in gql_data:
+            raise SchemaError(
+                f"'popularTitles' key missing entirely — available keys: {list(gql_data.keys())}"
+            )
+        return []  # key present but null — treat as empty result, not a schema error
+    if not isinstance(popular, dict):
+        raise SchemaError(f"'popularTitles' is {type(popular).__name__}, expected dict")
+
+    edges = popular.get('edges')
+    if edges is None:
+        if 'edges' not in popular:
+            raise SchemaError(
+                f"'edges' key missing entirely from popularTitles — available keys: {list(popular.keys())}"
+            )
+        return []  # edges present but null — empty result
+    if not isinstance(edges, list):
+        raise SchemaError(f"'edges' is {type(edges).__name__}, expected list")
+
+    return edges
+
+
+def _validate_offers_response(data: dict) -> list:
+    """
+    Validates the offers response and returns the offers list.
+    Raises SchemaError if the shape has changed.
+    """
+    if not isinstance(data, dict):
+        raise SchemaError(f"Expected dict, got {type(data).__name__}")
+
+    gql_data = data.get('data')
+    if not isinstance(gql_data, dict):
+        raise SchemaError(f"Missing 'data' key — top-level keys: {list(data.keys())}")
+
+    node = gql_data.get('node')
+    # node=null is a valid JustWatch response when the ID is unknown — not a schema error
+    if node is None:
+        if 'node' not in gql_data:
+            raise SchemaError(
+                f"'node' key missing entirely from data — available keys: {list(gql_data.keys())}"
+            )
+        return []  # node key exists but is null — unknown ID, no offers
+
+    if not isinstance(node, dict):
+        raise SchemaError(f"'node' is {type(node).__name__}, expected dict or null")
+
+    offers = node.get('offers')
+    if offers is None:
+        raise SchemaError(
+            f"'offers' missing from node — available keys: {list(node.keys())}"
+        )
+    if not isinstance(offers, list):
+        raise SchemaError(f"'offers' is {type(offers).__name__}, expected list")
+
+    return offers
 
 # ── GraphQL Queries ──────────────────────────────────────────────────────────
 
@@ -196,7 +305,14 @@ def has_hindi_dub(title: str, content_type: str):
     if not data:
         return None
 
-    edges = data.get('data', {}).get('popularTitles', {}).get('edges', [])
+    try:
+        edges = _validate_search_response(data)
+    except SchemaError as e:
+        msg = f"JustWatch search schema changed for '{title}': {e}"
+        print(f'\n  ⚠️  {msg}')
+        _send_telegram_alert(msg)
+        return None
+
     if not edges:
         return False
 
@@ -205,12 +321,12 @@ def has_hindi_dub(title: str, content_type: str):
     # Find the top result of the correct type whose title actually matches
     top_match = None
     for e in edges:
-        node = e['node']
+        node = e.get('node') or {}
         if node.get('__typename') != want:
             continue
         content = node.get('content') or {}
         if _titles_match(title, content.get('title', ''), content.get('originalTitle', '')):
-            top_match = node['id']
+            top_match = node.get('id')
             break
 
     if not top_match:
@@ -220,7 +336,14 @@ def has_hindi_dub(title: str, content_type: str):
     if not offer_data:
         return None
 
-    offers = (offer_data.get('data', {}).get('node') or {}).get('offers', [])
+    try:
+        offers = _validate_offers_response(offer_data)
+    except SchemaError as e:
+        msg = f"JustWatch offers schema changed for '{title}': {e}"
+        print(f'\n  ⚠️  {msg}')
+        _send_telegram_alert(msg)
+        return None
+
     return any('hi' in (offer.get('audioLanguages') or []) for offer in offers)
 
 

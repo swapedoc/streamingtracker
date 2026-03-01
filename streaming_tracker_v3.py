@@ -57,6 +57,12 @@ ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS leaving_date DATE;
 ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_score FLOAT;   -- 1.0 to 10.0
 ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_label TEXT;    -- e.g. "Scare Factor", "Laugh Meter"
 
+-- ── Full review text (run once) ───────────────────────────────────────────────
+-- review_text was previously truncated to 800-1000 chars before saving.
+-- It is now stored at full length so you can re-run LLM prompts without re-scraping.
+-- If your column is currently VARCHAR(n), widen it:
+ALTER TABLE reviews ALTER COLUMN review_text TYPE TEXT;
+
 -- ── Manual trailer overrides (run once) ──────────────────────────────────────
 -- Use when TMDb has no trailer for a title you know has one.
 -- Get tmdb_id from: themoviedb.org → search title → number in URL
@@ -576,6 +582,24 @@ class TMDbResolver:
                             break
                     if result['trailer_id']:
                         break
+
+            # If nothing found in English, try the Hindi-language endpoint
+            # (many Bollywood/Indian titles only have trailers filed under 'hi')
+            if not result['trailer_id']:
+                r2 = self._session.get(
+                    f"{self.base_url}/{mt}/{tmdb_id}/videos",
+                    params={'api_key': self.api_key, 'language': 'hi'},
+                    timeout=10,
+                )
+                if r2.status_code == 200:
+                    videos2 = r2.json().get('results', [])
+                    for vtype in ('Trailer', 'Teaser'):
+                        for v in videos2:
+                            if v.get('site') == 'YouTube' and v.get('type') == vtype:
+                                result['trailer_id'] = v['key']
+                                break
+                        if result['trailer_id']:
+                            break
         except Exception:
             pass
 
@@ -589,12 +613,29 @@ class TMDbResolver:
         return result
 
     _TRUSTED_CHANNEL_NAMES = {
+        # Global streamers / studios
         'netflix', 'prime video', 'amazon prime', 'apple tv', 'disney',
         'hotstar', 'sony pictures', 'warner bros', 'universal pictures',
         'paramount', 'lionsgate', 'a24', 'marvel', 'dc', 'mgm', 'mubi',
-        'ign', 'filmspot trailer', 'zee studios', 'yash raj films',
-        'dharma productions', 't-series', 'pen movies', 'eros now',
-        'jiocinema', 'hulu', 'hbo',
+        'ign', 'filmspot trailer', 'hulu', 'hbo',
+        # Indian studios & distributors
+        'zee studios', 'zee music company',
+        'yash raj films',
+        'dharma productions',
+        't-series',
+        'pen movies', 'pen marudhar',
+        'eros now', 'eros movies',
+        'jiocinema', 'jio studios',
+        'excel entertainment',
+        'maddock films',
+        'tips films', 'tips official',
+        'red chillies entertainment',
+        'balaji motion pictures',
+        'viacom18 studios', 'viacom18',
+        'saregama music',
+        'sony music india',
+        'reliance entertainment',
+        'gulshan kumar', 'bhushan kumar',
     }
     _TRUSTED_CHANNEL_IDS = {
         'UCWX3yGbOBE3mMSBSCVDzK4g', 'UCTOxLBzMBCEFTEMF7DqhAsg',
@@ -608,46 +649,71 @@ class TMDbResolver:
     }
 
     def _youtube_trailer_fallback(self, title: str, year: int = None):
-        """Search YouTube for an official trailer from a trusted channel."""
+        """Search YouTube for an official trailer from a trusted channel only.
+        Returns None rather than risk returning a fan-made or unofficial video.
+
+        Two-pass strategy, both require a trusted channel:
+          Pass 1: query with year — precise, avoids wrong-film hits
+          Pass 2: query without year — catches titles with wrong/missing year
+        No fallback to untrusted channels. No trailer is better than a fan trailer.
+        """
         yt_key = Config.YOUTUBE_API_KEY
         if not yt_key:
             return None
-        query = f"{title} {year} official trailer" if year else f"{title} official trailer"
+
         REJECT = {
-            'reaction', 'review', 'fan made', 'fan-made', 'breakdown',
-            'explained', 'analysis', 'ranked', 'every scene', 'deleted',
-            'behind the scenes', 'making of', 'interview', 'featurette',
-            'clip', 'scene', 'spoiler',
+            'reaction', 'review', 'fan made', 'fan-made', 'fan trailer',
+            'fan concept', 'concept trailer', 'breakdown', 'explained',
+            'analysis', 'ranked', 'every scene', 'deleted',
+            'behind the scenes', 'making of', 'interview',
+            'featurette', 'clip', 'scene', 'spoiler', 'pitch meeting',
         }
+
+        # Build query list — with year first for precision, then without
+        queries = []
+        if year:
+            queries.append(f"{title} {year} official trailer")
+        queries.append(f"{title} official trailer")
+
         try:
-            r = self._session.get(
-                'https://www.googleapis.com/youtube/v3/search',
-                params={
-                    'part': 'snippet', 'q': query, 'type': 'video',
-                    'maxResults': 5, 'order': 'relevance', 'key': yt_key,
-                },
-                timeout=10,
-            )
-            if r.status_code == 403:
-                return None
-            if not r.ok:
-                return None
-            for item in r.json().get('items', []):
-                vid_id     = item.get('id', {}).get('videoId', '')
-                snippet    = item.get('snippet', {})
-                vid_title  = snippet.get('title', '').lower()
-                channel    = snippet.get('channelTitle', '').lower()
-                channel_id = snippet.get('channelId', '')
-                if not vid_id:
+            for query in queries:
+                r = self._session.get(
+                    'https://www.googleapis.com/youtube/v3/search',
+                    params={
+                        'part': 'snippet', 'q': query, 'type': 'video',
+                        'maxResults': 8, 'order': 'relevance', 'key': yt_key,
+                    },
+                    timeout=10,
+                )
+                if r.status_code == 403:
+                    return None   # quota exhausted — stop immediately
+                if not r.ok:
                     continue
-                if any(w in vid_title for w in REJECT):
-                    continue
-                if 'trailer' not in vid_title and 'teaser' not in vid_title:
-                    continue
-                if any(t in channel for t in self._TRUSTED_CHANNEL_NAMES) \
-                        or channel_id in self._TRUSTED_CHANNEL_IDS:
+
+                for item in r.json().get('items', []):
+                    vid_id     = item.get('id', {}).get('videoId', '')
+                    snippet    = item.get('snippet', {})
+                    # Use original-case title for the reject/trailer check after lowercasing
+                    vid_title  = snippet.get('title', '').lower()
+                    channel    = snippet.get('channelTitle', '').lower()
+                    channel_id = snippet.get('channelId', '')
+
+                    if not vid_id:
+                        continue
+                    # Must look like a trailer or teaser
+                    if 'trailer' not in vid_title and 'teaser' not in vid_title:
+                        continue
+                    # Must not be noise/fan content
+                    if any(w in vid_title for w in REJECT):
+                        continue
+                    # Must be from a trusted channel — no exceptions
+                    if not (any(t in channel for t in self._TRUSTED_CHANNEL_NAMES)
+                            or channel_id in self._TRUSTED_CHANNEL_IDS):
+                        continue
                     return vid_id
-            return None
+
+            return None   # nothing trusted found — return None, not garbage
+
         except Exception:
             return None
 
@@ -1251,7 +1317,8 @@ Where:
             return None
 
         metric, _ = self.vibe_label_for(genre)
-        # Combine up to 8 reviews, capped at 3000 chars total
+        # Combine up to 8 reviews. review_text is now stored full-length (no DB truncation),
+        # but we still cap the LLM prompt at 3000 chars to stay within token limits.
         combined = '\n\n'.join(t[:400] for t in review_texts[:8])
         combined = combined[:3000]
 
@@ -1401,7 +1468,7 @@ class RedditIngester:
                             and not any(p in body.lower() for p in self.noise_phrases)):
                         sent = self.sentiment.analyze(body)
                         extracted.append({
-                            'text': body[:600],
+                            'text': body,
                             'sentiment': sent['sentiment'],
                             'confidence': sent['confidence'],
                             'score': c_data.get('score', 0)
@@ -1496,7 +1563,7 @@ class RedditIngester:
                     'source_id': f"{thread['url']}_{hash(comment['text'][:10])}",
                     'reviewer': f"r/{thread.get('subreddit', 'reddit')}",
                     'review_text': comment['text'],
-                    'sentiment_score': (comment['sentiment'] + 1) * 50,
+                    'sentiment': comment['sentiment'],
                     'confidence': comment['confidence'],
                     'weighted_sentiment': comment['sentiment'] * comment['confidence']
                 }
@@ -1873,7 +1940,7 @@ class CriticReviewScraper:
             'verdict': verdict_text[:80],
             'sentiment': sentiment,
             'confidence': confidence,
-            'text': body[:800] or verdict_text,
+            'text': body or verdict_text,
             'reviewer': 'Decider'
         }
 
@@ -1927,7 +1994,7 @@ class CriticReviewScraper:
                     break
 
         body_tag = review_soup.select_one('div.review-content, div[itemprop="reviewBody"], div.page-content')
-        body = body_tag.get_text(strip=True)[:800] if body_tag else ''
+        body = body_tag.get_text(strip=True) if body_tag else ''
 
         if stars is not None:
             if stars >= 3:
@@ -2002,7 +2069,7 @@ class CriticReviewScraper:
                 break
 
         body_tag = review_soup.select_one('div.article-content, section.article-body, div[class*="body"]')
-        body = body_tag.get_text(strip=True)[:800] if body_tag else ''
+        body = body_tag.get_text(strip=True) if body_tag else ''
 
         if grade and grade in grade_map:
             sentiment, confidence = grade_map[grade]
@@ -2065,7 +2132,7 @@ class CriticReviewScraper:
                 sentiment, confidence = 0, 0.5
 
             body_tag = soup.select_one('div.review-body, div[class*="review-content"], article')
-            body = body_tag.get_text(strip=True)[:800] if body_tag else ''
+            body = body_tag.get_text(strip=True) if body_tag else ''
 
             return {
                 'source': 'bollywood_hungama',
@@ -2176,7 +2243,7 @@ class CriticReviewScraper:
                     'source_url': result['url'],
                     'source_id': f"{result['source']}_{content_id}_{result.get('url','')[-20:].replace('/','-')}",
                     'reviewer': result['reviewer'],
-                    'review_text': result.get('text', '')[:800],
+                    'review_text': result.get('text', ''),
                     'sentiment': result['sentiment'],
                     'confidence': result['confidence'],
                     'weighted_sentiment': result['sentiment'] * result['confidence']
@@ -2419,7 +2486,7 @@ class YouTubeIngester:
                 'source_id': video['video_id'],
                 'reviewer': video['channel'],
                 'reviewer_subscribers': stats.get('subscribers', 0),
-                'review_text': review_text[:1000],
+                'review_text': review_text,
                 'sentiment': sentiment_result['sentiment'],
                 'confidence': sentiment_result['confidence'],
                 'views': stats.get('views', 0),
@@ -2575,7 +2642,7 @@ class YouTubeIngester:
                     'source_url': review.get('url', ''),
                     'source_id': f"tmdb_{review_id}",
                     'reviewer': author,
-                    'review_text': text[:800],
+                    'review_text': text,
                     'sentiment': sent['sentiment'],
                     'confidence': sent['confidence'],
                     'weighted_sentiment': sent['sentiment'] * sent['confidence']
@@ -3092,7 +3159,7 @@ class AsyncWatchNowPipeline:
                 'source_url': f"https://youtube.com/watch?v={video['video_id']}",
                 'source_id': video['video_id'], 'reviewer': video['channel'],
                 'reviewer_subscribers': stats.get('subscribers', 0),
-                'review_text': text[:1000],
+                'review_text': text,
                 'sentiment': sent['sentiment'], 'confidence': sent['confidence'],
                 'views': stats.get('views', 0), 'likes': stats.get('likes', 0),
                 'comments_count': stats.get('comments', 0),
@@ -3133,7 +3200,7 @@ class AsyncWatchNowPipeline:
                 'source_url': review.get('url', ''),
                 'source_id': f"tmdb_{review.get('id','')}",
                 'reviewer': review.get('author', 'TMDb User'),
-                'review_text': review['content'][:800],
+                'review_text': review['content'],
                 'sentiment': sent['sentiment'], 'confidence': sent['confidence'],
                 'weighted_sentiment': sent['sentiment'] * sent['confidence']
             })
@@ -3183,7 +3250,7 @@ class AsyncWatchNowPipeline:
                     'source_url': result['url'],
                     'source_id': f"{result['source']}_{content_id}",
                     'reviewer': result['reviewer'],
-                    'review_text': result.get('text','')[:800],
+                    'review_text': result.get('text', ''),
                     'sentiment': result['sentiment'], 'confidence': result['confidence'],
                     'weighted_sentiment': result['sentiment'] * result['confidence']
                 })
@@ -3659,18 +3726,15 @@ class JustWatchFetcher:
             print("⚡️ No Discover content found")
             return
 
-        # Process rows that either:
-        #   a) have no stream_url yet, OR
-        #   b) have a stream_url but leaving_date has never been checked
-        #      (stream_url present but leaving_date column is NULL means it was
-        #       fetched before expiry tracking was added — re-check it)
-        rows_needing_update = [
-            r for r in rows.data
-            if not r.get('stream_url') or r.get('leaving_date') is None
-        ]
-        skipped = len(rows.data) - len(rows_needing_update)
-        if skipped:
-            print(f"   ⏭️  Skipping {skipped} titles already fully up to date")
+        # Always re-fetch ALL rows on every run so leaving_date stays current.
+        # JustWatch updates validUntil daily — skipping rows means expiry dates
+        # go stale and "Last Chance" stays empty even when titles are about to leave.
+        rows_needing_update = rows.data
+
+        # Report how many already have stream URLs (for info only — we still re-check)
+        already_linked = sum(1 for r in rows.data if r.get('stream_url'))
+        if already_linked:
+            print(f"   🔄 Re-checking expiry dates for {already_linked} already-linked titles")
 
         updated = self._fetch_and_update(rows_needing_update, 'discover_content')
         print(f"\n✅ {updated}/{len(rows_needing_update)} Discover titles updated")
@@ -3680,13 +3744,12 @@ class JustWatchFetcher:
 # MAIN - RUN BOTH FLOWS
 # ============================================================================
 
-def _enrich_discover_details():
+def _enrich_discover_details(force_trailers: bool = False):
     """
     Backfill runtime + trailer_id for Discover content rows that are missing them.
-    Processes rows where:
-      - trailer_id IS NULL  (never enriched), OR
-      - TV show with episode_runtime IS NULL or = 0  (enriched but got bad runtime data)
-      - Movie with runtime IS NULL or = 0
+    Pass force_trailers=True (or --force-trailers CLI flag) to re-fetch trailers
+    for every row, even those that already have one — useful after improving the
+    trailer lookup logic.
     """
     db   = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
     tmdb = TMDbResolver()
@@ -3705,12 +3768,13 @@ def _enrich_discover_details():
 
     to_do = []
     for r in all_rows:
-        if not r.get('trailer_id'):
-            to_do.append(r)   # never enriched at all
-        elif r.get('content_type') == 'tv' and not r.get('episode_runtime'):
-            to_do.append(r)   # TV row with missing/zero episode runtime
-        elif r.get('content_type') == 'movie' and not r.get('runtime'):
-            to_do.append(r)   # movie with missing/zero runtime
+        needs_trailer  = force_trailers or not r.get('trailer_id')
+        needs_runtime  = (r.get('content_type') == 'tv'    and not r.get('episode_runtime')) \
+                      or (r.get('content_type') == 'movie' and not r.get('runtime'))
+        if needs_trailer or needs_runtime:
+            to_do.append(r)
+    if force_trailers:
+        print(f"   🔄 --force-trailers: re-fetching trailers for all {len(to_do)} rows")
 
     if not to_do:
         print("   ⏭  All Discover rows already enriched.")
@@ -3895,6 +3959,8 @@ def main():
                         help='Use Groq/Gemini sentiment (slower, marginal gain)')
     parser.add_argument('--discover-only', action='store_true',
                         help='Skip Watch Now flow — only run Discover + stream URL fetch')
+    parser.add_argument('--force-trailers', action='store_true',
+                        help='Re-fetch trailers for ALL Discover rows (ignores existing trailer_id)')
     args, _ = parser.parse_known_args()
 
     if args.no_reddit:
@@ -3957,7 +4023,7 @@ def main():
 
     # Enrich Discover rows with runtime + trailers concurrently
     print("\n📐 Enriching Discover content with runtime + trailers...")
-    _enrich_discover_details()
+    _enrich_discover_details(force_trailers=args.force_trailers)
     
     # FLOW 2: WATCH NOW (With reviews & scoring — async pipeline)
     if args.discover_only:
