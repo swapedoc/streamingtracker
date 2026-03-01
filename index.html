@@ -1649,23 +1649,28 @@ async function loadData() {
   }
 
   try {
-    // Fetch page 1 first to know total size, then fire remaining pages in parallel
+    // Fetch page 1 with count=exact so we know exactly how many rows exist
+    // This avoids the "thundering herd" of 19 blind parallel requests
     const firstRes = await fetch(
       `${SUPA_URL}/rest/v1/discover_content?select=${DISC_COLS}&order=popularity.desc&offset=0&limit=${PAGE}`,
-      { headers }
+      { headers: { ...headers, 'Prefer': 'count=exact' } }
     );
     const firstBatch = await firstRes.json();
     D = Array.isArray(firstBatch) ? _parseDiscBatch(firstBatch) : [];
 
-    // Render Discover with first 1000 rows immediately — user sees content fast
+    // Render Discover with first page immediately — user sees content fast
     renderDiscPills();
     renderDisc();
     _updateDiscTabBadge();
 
-    // If there are more pages, fetch them all simultaneously
-    if (Array.isArray(firstBatch) && firstBatch.length === PAGE) {
+    // Use Content-Range header to know exact total — only fire as many requests as needed
+    const contentRange = firstRes.headers.get('content-range');
+    const totalCount   = contentRange ? parseInt(contentRange.split('/')[1]) : 0;
+    const pagesNeeded  = totalCount > PAGE ? Math.ceil(totalCount / PAGE) - 1 : 0;
+
+    if (pagesNeeded > 0) {
       const offsets = [];
-      for (let off = PAGE; off < 20000; off += PAGE) offsets.push(off);
+      for (let i = 1; i <= pagesNeeded; i++) offsets.push(i * PAGE);
 
       const remaining = await Promise.all(
         offsets.map(off =>
@@ -1681,7 +1686,6 @@ async function loadData() {
         if (!Array.isArray(batch) || !batch.length) break;
         D.push(..._parseDiscBatch(batch));
         gotAny = true;
-        if (batch.length < PAGE) break;
       }
 
       // Re-render Discover with full dataset
@@ -2293,12 +2297,18 @@ function _restoreHashPanel() {
   if (found) openPanel(found, null);
 }
 
+/* ── DEBOUNCE — batch rapid filter/search changes into one render ─────────
+   Pill clicks feel instant (16ms), search waits for typing to pause (180ms) */
+let _wTimer, _dTimer;
+function _schedW(fn, delay) { clearTimeout(_wTimer); _wTimer = setTimeout(fn, delay ?? 16); }
+function _schedD(fn, delay) { clearTimeout(_dTimer); _dTimer = setTimeout(fn, delay ?? 16); }
+
 /* ── FILTER HANDLERS ── */
-function sP(v,b) { wPlat=v; document.querySelectorAll('[data-p]').forEach(x=>x.classList.toggle('on',x===b)); renderWatch(); }
-function sT(v,b) { wType=v; wGenre='all'; document.querySelectorAll('[data-t]').forEach(x=>x.classList.toggle('on',x===b)); renderWatchGenrePills(); renderWatch(); }
-function sG(v,b) { wGenre=v; renderWatchGenrePills(); renderWatch(); }
-function wSr(v)  { wSearch=v; renderWatch(); }
-function wSo(v)  { wSort=v; renderWatch(); }
+function sP(v,b) { wPlat=v; document.querySelectorAll('[data-p]').forEach(x=>x.classList.toggle('on',x===b)); _schedW(renderWatch); }
+function sT(v,b) { wType=v; wGenre='all'; document.querySelectorAll('[data-t]').forEach(x=>x.classList.toggle('on',x===b)); renderWatchGenrePills(); _schedW(renderWatch); }
+function sG(v,b) { wGenre=v; renderWatchGenrePills(); _schedW(renderWatch); }
+function wSr(v)  { wSearch=v; _schedW(renderWatch, 180); }
+function wSo(v)  { wSort=v; _schedW(renderWatch); }
 
 /* ── DISCOVER ── */
 let dPlat = 'all';
@@ -2477,17 +2487,17 @@ function renderDisc() {
 function sC(v,b) {
   dCat=v;
   document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on',x===b));
-  renderDisc();
+  _schedD(renderDisc);
 }
-function sdP(v,b) { dPlat=v; document.querySelectorAll('[data-dp]').forEach(x=>x.classList.toggle('on',x===b)); renderDisc(); }
+function sdP(v,b) { dPlat=v; document.querySelectorAll('[data-dp]').forEach(x=>x.classList.toggle('on',x===b)); _schedD(renderDisc); }
 function sdT(v,b) {
   dType=v;
   dCat='all';  // reset category when type switches — film genres don't apply to series and vice versa
   document.querySelectorAll('[data-dt]').forEach(x=>x.classList.toggle('on',x===b));
   renderDiscPills();  // swap genre pills for the new type
-  renderDisc();
+  _schedD(renderDisc);
 }
-function dSr(v)  { dSearch=v; renderDisc(); }
+function dSr(v)  { dSearch=v; _schedD(renderDisc, 180); }
 
 /* ── TAB SWITCH ── */
 function showTab(t, btn) {
@@ -2596,29 +2606,29 @@ function toggleDiscTrailer(idx, videoId) {
 function toggleHindiW(btn) {
   window._wHindi = !window._wHindi;
   btn.classList.toggle('on', window._wHindi);
-  renderWatch();
+  _schedW(renderWatch);
 }
 function toggleHindiD(btn) {
   window._dHindi = !window._dHindi;
   btn.classList.toggle('on', window._dHindi);
-  renderDisc();
+  _schedD(renderDisc);
 }
 function toggleLeavingD(btn) {
   window._dLeaving = !window._dLeaving;
   btn.classList.toggle('on', window._dLeaving);
-  renderDisc();
+  _schedD(renderDisc);
 }
 
 function wWorth() {
   wSort = 'score';
   window._wFilter = 'worth';
   showTab('watch', document.querySelector('.tab'));
-  renderWatch();
+  _schedW(renderWatch);
 }
 function wPolar() {
   window._wFilter = 'polar';
   showTab('watch', document.querySelector('.tab'));
-  renderWatch();
+  _schedW(renderWatch);
 }
 
 /* ── VIBE SEARCH (Edge Function) ── */
