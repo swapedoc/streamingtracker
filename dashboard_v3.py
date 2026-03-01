@@ -2489,7 +2489,13 @@ function getFW() {
   return base
     .filter(d => wPlat==='all' || d.platform===wPlat)
     .filter(d => wType==='all'  || d.type===wType)
-    .filter(d => wGenre==='all' || (wType==='tv' ? d.tv_genre===wGenre : d.genre===wGenre))
+    .filter(d => wGenre==='all' || (() => {
+      if (wType === 'tv')    return d.tv_genre === wGenre;
+      if (wType === 'movie') return d.genre    === wGenre;
+      // "All Types" — a genre pill could be a film genre (stored in d.genre)
+      // OR a TV genre (stored in d.tv_genre). Check both so neither goes missing.
+      return d.genre === wGenre || d.tv_genre === wGenre;
+    })())
     .filter(d => !wSearch || d.title.toLowerCase().includes(wSearch.toLowerCase()))
     .sort((a,b) => {
       if (wSort==='score') return b.score - a.score;
