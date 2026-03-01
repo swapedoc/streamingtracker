@@ -1949,7 +1949,10 @@ var SRIB_COLORS = {
   'ds': ['#F5F5F0','#E8C547','#4DBFFF','#FF7043','#B88EFF'],
   'ws': ['#F5F5F0','#E8C547','#8CB4CC','#FF4455','#7A7A90']
 };
+const _sribActive = {}; // tracks active index per ribbon element id
+
 function setSribActive(elId, idx) {
+  _sribActive[elId] = idx;
   var colors = SRIB_COLORS[elId] || [];
   document.querySelectorAll('#'+elId+' .srib').forEach(function(x,i){
     if (i === idx) {
@@ -1993,7 +1996,7 @@ function renderStats(data, elId, isDisc) {
       { n: cats['classics']||0, l: 'Classics',    c: '#E8C547', fn: "sC('classics',null);setSribActive('ds',1)"  },
       { n: cats['underdog']||0, l: 'Hidden Gems', c: '#4DBFFF', fn: "sC('underdog',null);setSribActive('ds',2)"  },
       { n: cats['indian']||0,   l: 'Indian',      c: '#FF7043', fn: "sC('indian',null);setSribActive('ds',3)"    },
-      { n: genres,              l: 'Genre Picks', c: '#B88EFF', fn: "sC('genre_picks',null);setSribActive('ds',4);"},
+      { n: genres,              l: 'Genre Picks', c: '#B88EFF', fn: "dCat='genre_picks';document.querySelectorAll('[data-c]').forEach(x=>x.classList.remove('on'));_schedD(renderDisc);setSribActive('ds',4);"},
     ];
   }
   document.getElementById(elId).innerHTML = items.map(s =>
@@ -2002,6 +2005,8 @@ function renderStats(data, elId, isDisc) {
       <div class="srib-l">${s.l}${s.fn ? ' ↗' : ''}</div>
     </div>`
   ).join('');
+  // Reapply active highlight — innerHTML wipes inline styles
+  if (_sribActive[elId] !== undefined) setSribActive(elId, _sribActive[elId]);
 }
 
 /* ── CARD ── */
@@ -2498,10 +2503,9 @@ function renderDisc() {
 
 function sC(v,b) {
   dCat=v;
-  // b is the clicked button element, or null when called from stats ribbon
-  // Either way, highlight the pill whose data-c matches v
-  const target = b || document.querySelector(`[data-c="${CSS.escape(v)}"]`);
-  document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on', x===target));
+  // When called from stats ribbon, b is null — find the matching pill by data-c
+  const active = b || document.querySelector('#disc-cat-pills [data-c="'+v+'"]');
+  document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on', x===active));
   _schedD(renderDisc);
 }
 function sdP(v,b) { dPlat=v; document.querySelectorAll('[data-dp]').forEach(x=>x.classList.toggle('on',x===b)); _schedD(renderDisc); }
