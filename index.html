@@ -2133,20 +2133,60 @@ function wIdxFor(d) {
 }
 
 /* ── RENDER WATCH ── */
+const WATCH_PAGE = 40;
+let _watchData   = [];
+let _watchOffset = 0;
+let _watchObs    = null;
+
+function _watchFillText(card) {
+  const idx = parseInt(card.dataset.widx);
+  if (isNaN(idx) || idx < 0 || idx >= W.length) return;
+  const d = W[idx];
+  card.querySelector('.card-title').textContent         = d.title || '';
+  card.querySelector('.card-plat').textContent          = d.platform || '';
+  card.querySelector('.poster-reveal-text').textContent = d.overview || d.title || '';
+}
+
+function _watchAppendNextBatch(el, anchor) {
+  if (_watchOffset >= _watchData.length) {
+    if (anchor && anchor.parentNode) anchor.parentNode.removeChild(anchor);
+    return;
+  }
+  const batch = _watchData.slice(_watchOffset, _watchOffset + WATCH_PAGE);
+  const tmp = document.createElement('div');
+  tmp.innerHTML = batch.map((d, i) => makeCard(d, i, wIdxFor(d))).join('');
+  const cards = Array.from(tmp.querySelectorAll('.card'));
+  while (tmp.firstChild) el.insertBefore(tmp.firstChild, anchor);
+  cards.forEach(_watchFillText);
+  _watchOffset += WATCH_PAGE;
+}
+
 function renderWatch() {
-  const data = getFW();
+  _watchData = getFW();
   renderStats(W, 'ws', false);
   const el = document.getElementById('wg');
-  if (!data.length) { el.innerHTML = '<div class="empty">No titles match your filters</div>'; return; }
-  el.innerHTML = data.slice(0,200).map((d, i) => makeCard(d, i, wIdxFor(d))).join('');
-  el.querySelectorAll('.card').forEach(card => {
-    const idx = parseInt(card.dataset.widx);
-    if (isNaN(idx) || idx < 0 || idx >= W.length) return;
-    const d = W[idx];
-    card.querySelector('.card-title').textContent = d.title || '';
-    card.querySelector('.card-plat').textContent  = d.platform || '';
-    card.querySelector('.poster-reveal-text').textContent = d.overview || d.title || '';
-  });
+
+  if (_watchObs) { _watchObs.disconnect(); _watchObs = null; }
+
+  if (!_watchData.length) {
+    el.innerHTML = '<div class="empty">No titles match your filters</div>';
+    return;
+  }
+
+  _watchOffset = 0;
+  el.innerHTML = '<div id="watch-anchor" style="height:1px;grid-column:1/-1"></div>';
+  const anchor = document.getElementById('watch-anchor');
+  _watchAppendNextBatch(el, anchor);
+
+  if (_watchOffset >= _watchData.length) {
+    if (anchor && anchor.parentNode) anchor.parentNode.removeChild(anchor);
+    return;
+  }
+
+  _watchObs = new IntersectionObserver(function(entries) {
+    if (entries[0].isIntersecting) _watchAppendNextBatch(el, anchor);
+  }, { rootMargin: '200px' });
+  _watchObs.observe(anchor);
 }
 /* ── PANEL ── */
 /* ── PANEL — safe index-based lookup ── */
