@@ -2911,6 +2911,7 @@ function getFD() {
 }
 
 function renderDisc() {
+  window._discDirty = false;
   const data = getFD();
   renderStats(D, 'ds', true);
   _updateDiscTabBadge();
@@ -2932,73 +2933,104 @@ function renderDisc() {
     </div>`;
     return;
   }
-  el.innerHTML = data.slice(0,150).map((d,i) => {
-    const img    = d.poster ? 'https://image.tmdb.org/t/p/w200'+d.poster : null;
-    const catCol  = CC[d.category] || '#666';
-    const catLbl  = CL[d.category] || d.category;
-    const platCol = pc(d.platform);
-    const tmdb    = d.tmdb_id ? `https://www.themoviedb.org/${d.type==='tv'?'tv':'movie'}/${d.tmdb_id}` : '#';
-    const jwQuery = encodeURIComponent(d.title);
-    const jwUrl   = `https://www.justwatch.com/in/search?q=${jwQuery}`;
-    const delay  = (i%30)*0.016;
-    return `
-<div class="dc fu" style="animation-delay:${delay}s;--cc:${catCol}">
-  <a href="${tmdb}" target="_blank" style="text-decoration:none;color:inherit;display:flex;flex-direction:column;flex:1">
-  <div class="dc-poster" style="position:relative;">
-    ${img ? `<img src="${img}" loading="lazy" alt="${d.title}"/>` : `<div class="dc-poster-ph">🎬</div>`}
-    ${d.trailer_id ? `
-    <div class="dc-trailer-wrap" id="dct-${i}" style="display:none;position:absolute;inset:0;z-index:5;">
-      <iframe id="dcif-${i}" src="" style="width:100%;height:100%;border:none;"
-        allow="autoplay; encrypted-media" allowfullscreen></iframe>
-    </div>
-    <button class="dc-trailer-btn" onclick="event.preventDefault();event.stopPropagation();toggleDiscTrailer(${i},'${d.trailer_id}')"
-      data-trailer="${d.trailer_id}" data-idx="${i}">▶ Trailer</button>` : ''}
-  </div>
-  <div class="dc-body">
-    <div class="dc-title">${d.title}</div>
-    <div class="dc-sub">${d.type==='tv'?'Series':'Film'} · ${d.year} · ${d.platform}</div>
-    ${d.binge ? `<div class="dc-binge">⏱ ${d.binge}</div>` : ''}
-    ${(() => {
-      const days = _daysUntil(d.leaving_date);
-      if (days === null || days < 0) return '';
-      const urgency = days <= 7 ? 'soon' : '';
-      const label = days === 0 ? 'Leaving today!'
-                  : days === 1 ? 'Leaving tomorrow'
-                  : `Leaving in ${days}d`;
-      return `<div class="dc-leaving ${urgency}">⏳ ${label}</div>`;
-    })()}
-    <div class="dc-foot">
-      ${d.rating ? `<span class="dc-rating">✦ ${d.rating.toFixed(1)}</span>` : ''}
-      <span class="dc-tag" style="color:${catCol};border-color:${catCol}">${catLbl}</span>
-      ${d.hindi_dub ? '<span class="dc-tag" style="color:#FF7043;border-color:#FF7043">🎙 Hindi</span>' : ''}
-    </div>
-  </div>
-  </a>
-  <div style="padding:6px 12px 10px;border-top:1px solid var(--v3);display:flex;flex-direction:column;gap:8px">
-    ${d.stream_url
-      ? (() => {
-          var dHref = d.stream_url;
-          if (d.stream_url.includes('netflix.com')) {
-            var dm = d.stream_url.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
-            if (dm) {
-              var isIOS2      = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-              var isChromeiOS2 = /CriOS/i.test(navigator.userAgent);
-              var isBraveiOS2  = /Brave/i.test(navigator.userAgent);
-              dHref = (isIOS2 && !isChromeiOS2 && !isBraveiOS2)
-                ? 'nflx://www.netflix.com/title/' + dm[1]
-                : d.stream_url;
-            }
-          }
-          return `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
-           <span class="tv-icon">📋</span> Copy Title
-         </button>
-         <a href="${dHref}" target="_blank" class="jw-link" style="color:${platCol}">&#9654; Watch on ${d.platform}</a>`;
-        })()
-      : `<a href="${jwUrl}" target="_blank" class="jw-link">&#9654; Find on JustWatch</a>`
+  // Render first 30 cards immediately, then stream the rest in chunks via rAF
+  const CHUNK = 30;
+  const slice = data.slice(0, 150);
+
+  function makeDiscCard(d, i) {
+    var img      = d.poster ? 'https://image.tmdb.org/t/p/w200' + d.poster : null;
+    var catCol   = CC[d.category] || '#666';
+    var catLbl   = CL[d.category] || d.category;
+    var platCol  = pc(d.platform);
+    var typeSlug = d.type === 'tv' ? 'tv' : 'movie';
+    var tmdb     = d.tmdb_id ? 'https://www.themoviedb.org/' + typeSlug + '/' + d.tmdb_id : '#';
+    var jwUrl    = 'https://www.justwatch.com/in/search?q=' + encodeURIComponent(d.title);
+    var delay    = (i % 30) * 0.016;
+    var days     = _daysUntil(d.leaving_date);
+    var safeTitle = (d.title || '').replace(/'/g, "\\'");
+
+    // --- leaving badge ---
+    var leavingHtml = '';
+    if (days !== null && days >= 0) {
+      var urgCls = days <= 7 ? 'soon' : '';
+      var lbl = days === 0 ? 'Leaving today!' : (days === 1 ? 'Leaving tomorrow' : 'Leaving in ' + days + 'd');
+      leavingHtml = '<div class="dc-leaving ' + urgCls + '">\u23f3 ' + lbl + '</div>';
     }
-  </div>
-</div>`;
-  }).join('');
+
+    // --- netflix deep-link ---
+    var dHref = d.stream_url || '';
+    if (dHref.indexOf('netflix.com') !== -1) {
+      var dm = dHref.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
+      if (dm) {
+        var isIOS2      = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+        var isCriOS2    = /CriOS/i.test(navigator.userAgent);
+        var isBrave2    = /Brave/i.test(navigator.userAgent);
+        if (isIOS2 && !isCriOS2 && !isBrave2) dHref = 'nflx://www.netflix.com/title/' + dm[1];
+      }
+    }
+
+    // --- watch button ---
+    var watchBtn = d.stream_url
+      ? '<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px"'
+        + ' onclick="event.stopPropagation();copyTitle(\'' + safeTitle + '\', this)">'
+        + '<span class="tv-icon">\ud83d\udccb</span> Copy Title</button>'
+        + '<a href="' + dHref + '" target="_blank" class="jw-link" style="color:' + platCol + '">'
+        + '&#9654; Watch on ' + d.platform + '</a>'
+      : '<a href="' + jwUrl + '" target="_blank" class="jw-link">&#9654; Find on JustWatch</a>';
+
+    // --- poster section ---
+    var posterInner = img
+      ? '<img src="' + img + '" loading="lazy" alt="' + safeTitle + '"/>'
+      : '<div class="dc-poster-ph">\ud83c\udfac</div>';
+    if (d.trailer_id) {
+      posterInner +=
+        '<div class="dc-trailer-wrap" id="dct-' + i + '" style="display:none;position:absolute;inset:0;z-index:5;">'
+        + '<iframe id="dcif-' + i + '" src="" style="width:100%;height:100%;border:none;"'
+        + ' allow="autoplay; encrypted-media" allowfullscreen></iframe></div>'
+        + '<button class="dc-trailer-btn"'
+        + ' onclick="event.preventDefault();event.stopPropagation();toggleDiscTrailer(' + i + ',\'' + d.trailer_id + '\')"'
+        + ' data-trailer="' + d.trailer_id + '" data-idx="' + i + '">\u25b6 Trailer</button>';
+    }
+
+    // --- rating / tags ---
+    var ratingHtml = d.rating ? '<span class="dc-rating">\u2726 ' + d.rating.toFixed(1) + '</span>' : '';
+    var hindiTag   = d.hindi_dub ? '<span class="dc-tag" style="color:#FF7043;border-color:#FF7043">\ud83c\udfa4 Hindi</span>' : '';
+    var bingeHtml  = d.binge ? '<div class="dc-binge">\u23f1 ' + d.binge + '</div>' : '';
+    var subType    = d.type === 'tv' ? 'Series' : 'Film';
+
+    return '<div class="dc fu" style="animation-delay:' + delay + 's;--cc:' + catCol + '">'
+      + '<a href="' + tmdb + '" target="_blank" style="text-decoration:none;color:inherit;display:flex;flex-direction:column;flex:1">'
+      + '<div class="dc-poster" style="position:relative;">' + posterInner + '</div>'
+      + '<div class="dc-body">'
+      + '<div class="dc-title">' + d.title + '</div>'
+      + '<div class="dc-sub">' + subType + ' \u00b7 ' + d.year + ' \u00b7 ' + d.platform + '</div>'
+      + bingeHtml
+      + leavingHtml
+      + '<div class="dc-foot">'
+      + ratingHtml
+      + '<span class="dc-tag" style="color:' + catCol + ';border-color:' + catCol + '">' + catLbl + '</span>'
+      + hindiTag
+      + '</div>'
+      + '</div></a>'
+      + '<div style="padding:6px 12px 10px;border-top:1px solid var(--v3);display:flex;flex-direction:column;gap:8px">'
+      + watchBtn
+      + '</div></div>';
+  }
+
+  // Paint first chunk immediately — instant response on click
+  el.innerHTML = slice.slice(0, CHUNK).map(function(d, i) { return makeDiscCard(d, i); }).join('');
+
+  // Stream remaining chunks via rAF — never blocks the main thread
+  var _offset = CHUNK;
+  function _appendChunk() {
+    if (_offset >= slice.length) return;
+    var tmp = document.createElement('div');
+    tmp.innerHTML = slice.slice(_offset, _offset + CHUNK).map(function(d, i) { return makeDiscCard(d, _offset + i); }).join('');
+    while (tmp.firstChild) el.appendChild(tmp.firstChild);
+    _offset += CHUNK;
+    requestAnimationFrame(_appendChunk);
+  }
+  requestAnimationFrame(_appendChunk);
 }
 
 function sC(v,b) {
@@ -3022,7 +3054,7 @@ function showTab(t, btn) {
   document.getElementById('tab-disc').style.display  = t==='disc'  ? '' : 'none';
   document.getElementById('tab-wl').style.display    = t==='wl'    ? '' : 'none';
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b===btn));
-  if (t==='disc') renderDisc();
+  if (t==='disc' && window._discDirty !== false) renderDisc();
   if (t==='wl')   renderWatchlist();
 }
 
