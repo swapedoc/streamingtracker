@@ -2569,7 +2569,7 @@ class ScoringEngine:
     @staticmethod
     def get_dynamic_weights(release_year: int) -> Dict:
         """Dynamic weights based on content age (Recency Decay)"""
-        current_year = 2026
+        current_year = datetime.now().year
         age = current_year - release_year if release_year else 10
         
         if age <= 1:
@@ -2584,7 +2584,7 @@ class ScoringEngine:
     @staticmethod
     def get_category(release_year: int) -> str:
         """Categorize content as Trending or Catalog"""
-        current_year = 2026
+        current_year = datetime.now().year
         age = current_year - release_year if release_year else 10
         
         if age <= 2:
