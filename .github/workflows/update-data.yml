@@ -1,8 +1,9 @@
 name: Update Streaming Data
+
 on:
   schedule:
-    - cron: '0 */6 * * *'   # Every 6 hours — Watch Now + Discover
-    - cron: '0 2 * * 0'     # Every Sunday 2am — full catalog refresh
+    - cron: '0 */12 * * *'  # Every 12 hours — Watch Now + Discover
+    - cron: '0 2 * * 0'     # Every Sunday 2am — full catalog refresh + trailer enrich
     - cron: '30 3 * * *'    # Every day 9am IST — watchlist alerts
   workflow_dispatch:
     inputs:
@@ -17,20 +18,23 @@ on:
           - catalog-only
           - hindi-only
           - alerts-only
+          - trailers-only
 
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Wake Streamlit app
-        run: curl -s https://movietracker-swapriya.streamlit.app/ > /dev/null || true
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      # ── Sunday only: full catalog refresh ──────────────────────────────
       - name: Run full catalog refresh (Sundays only)
         if: github.event.schedule == '0 2 * * 0' || inputs.mode == 'catalog-only'
         env:
@@ -38,8 +42,28 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
         run: python3 fetch_full_catalog.py
+
+      # ── Sunday only: enrich trailers + runtime for discover_content ────
+      # Runs AFTER catalog refresh so new rows are already in the DB.
+      # Isolated from main tracker to protect the YouTube daily quota.
+      - name: Enrich trailers + runtime (Sundays only)
+        if: github.event.schedule == '0 2 * * 0' || inputs.mode == 'trailers-only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: python3 enrich_trailers_cron.py
+
+      # ── Every 6 hours: Watch Now + Discover tracker ─────────────────────
       - name: Run tracker
-        if: inputs.mode != 'catalog-only' && inputs.mode != 'hindi-only' && inputs.mode != 'alerts-only' && github.event.schedule != '0 2 * * 0' && github.event.schedule != '30 3 * * *'
+        if: >
+          inputs.mode != 'catalog-only' &&
+          inputs.mode != 'hindi-only' &&
+          inputs.mode != 'alerts-only' &&
+          inputs.mode != 'trailers-only' &&
+          github.event.schedule != '0 2 * * 0' &&
+          github.event.schedule != '30 3 * * *'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -54,19 +78,20 @@ jobs:
           else
             python3 streaming_tracker_v3.py
           fi
+
+      # ── Sunday only: fetch Hindi dubs ───────────────────────────────────
       - name: Fetch Hindi dubs
         if: github.event.schedule == '0 2 * * 0' || inputs.mode == 'hindi-only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python3 fetch_hindi_dubs.py
+
+      # ── Daily 9am IST: watchlist alerts ────────────────────────────────
       - name: Send watchlist alerts
         if: github.event.schedule == '30 3 * * *' || inputs.mode == 'alerts-only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 watchlist_alerts.py
-      - name: Keep Streamlit awake
-        run: curl -s https://movietracker-swapriya.streamlit.app/ > /dev/null || true
