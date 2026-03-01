@@ -347,7 +347,7 @@ body:has(.dc:hover) #cursor-ring {
 .search-wrap { margin-left: auto; position: relative; }
 .search-icon {
   position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
-  color: var(--t-void); font-size: 0.8rem; pointer-events: none;
+  color: var(--t-dim); font-size: 0.8rem; pointer-events: none;
   font-family: var(--mono);
 }
 .search {
@@ -357,13 +357,13 @@ body:has(.dc:hover) #cursor-ring {
   padding: 8px 14px 8px 32px; width: 200px; outline: none;
   transition: border-color 0.2s, width 0.35s var(--ease);
 }
-.search::placeholder { color: var(--t-void); }
+.search::placeholder { color: var(--t-dim); }
 .search:focus { border-color: var(--gold-d); width: 260px; }
 
 .sort-sel {
   font-family: var(--mono); font-size: 0.56rem;
   letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--t-void); background: var(--v1);
+  color: var(--t-mid); background: var(--v1);
   border: 1px solid var(--v3); border-radius: 1px;
   padding: 8px 12px; outline: none;
 }
@@ -1908,7 +1908,7 @@ function renderWatchGenrePills() {
 
   function tvPillHtml(g) {
     const isOn = wGenre === g.label;
-    const onStyle = isOn ? `border-color:${g.color};color:${g.color}` : '';
+    const onStyle = isOn ? '' : `border-color:${g.color};color:${g.color}`;
     return `<button class="pill${isOn?' on':''}" data-g="${g.label}"
       style="${onStyle}"
       onclick="sG('${g.label.replace(/'/g,"\'")}',this)">${g.label}</button>`;
