@@ -47,6 +47,12 @@ ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_count    INTEGER;
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_runtime  INTEGER;
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS trailer_id       TEXT;
 
+-- ── Leaving Soon columns (run once) ─────────────────────────────────────────
+-- Populated by JustWatchFetcher from the validUntil field on each offer.
+-- NULL = no expiry date reported by JustWatch (does NOT mean it's staying forever).
+ALTER TABLE content          ADD COLUMN IF NOT EXISTS leaving_date DATE;
+ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS leaving_date DATE;
+
 -- ── Vibe Score columns (run once) ────────────────────────────────────────────
 ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_score FLOAT;   -- 1.0 to 10.0
 ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_label TEXT;    -- e.g. "Scare Factor", "Laugh Meter"
@@ -510,8 +516,7 @@ class TMDbResolver:
                 return preferred
         return matched[0]
 
-    def get_runtime_and_trailer(self, tmdb_id: int, media_type: str,
-                                title: str = None, year: int = None) -> dict:
+    def get_runtime_and_trailer(self, tmdb_id: int, media_type: str) -> dict:
         """
         Fetch runtime details + official trailer ID in two parallel calls.
 
@@ -521,17 +526,11 @@ class TMDbResolver:
           episode_count   – total episodes (TV) or None
           episode_runtime – minutes per episode (TV) or None
           trailer_id      – YouTube video ID of the official trailer, or None
-
-        title / year are optional — used only for the YouTube fallback search
-        when TMDb /videos returns nothing.
         """
         result = {
             'runtime': None, 'seasons': None,
             'episode_count': None, 'episode_runtime': None,
             'trailer_id': None,
-            # Internal fields stripped before return:
-            '_title': title,
-            '_year':  year,
         }
         mt = 'movie' if media_type != 'tv' else 'tv'
 
@@ -591,139 +590,7 @@ class TMDbResolver:
         except Exception:
             pass
 
-        # ── YouTube API fallback — only fires when TMDb has no trailer ───────
-        # Costs 100 YouTube quota units per call, so guarded behind a title arg.
-        if not result['trailer_id'] and result.get('_title'):
-            yt_id = self._youtube_trailer_fallback(
-                result.pop('_title'), result.get('_year')
-            )
-            if yt_id:
-                result['trailer_id'] = yt_id
-                result['_yt_fallback'] = True
-        else:
-            result.pop('_title', None)
-        result.pop('_year', None)
-
         return result
-
-    # Trusted official channels — channel IDs that reliably host real trailers.
-    # Partial lowercase name matches are used as a fast pre-filter before the
-    # channel-ID allowlist, catching channels like "Sony Pictures India" that
-    # share a root with the verified parent.
-    _TRUSTED_CHANNEL_NAMES = {
-        'netflix', 'prime video', 'amazon prime',
-        'apple tv', 'disney', 'hotstar',
-        'sony pictures', 'warner bros', 'universal pictures',
-        'paramount', 'lionsgate', 'a24',
-        'marvel', 'dc', 'mgm',
-        'mubi', 'ign', 'filmspot trailer',
-        'zee studios', 'yash raj films', 'dharma productions',
-        't-series', 'pen movies', 'eros now',
-        'jiocinema', 'hulu', 'hbo',
-    }
-
-    # Hard-verified channel IDs for the most important distributors.
-    # These catch channels whose *display name* is ambiguous (e.g. "Trailers").
-    _TRUSTED_CHANNEL_IDS = {
-        'UCWX3yGbOBE3mMSBSCVDzK4g',  # Netflix
-        'UCTOxLBzMBCEFTEMF7DqhAsg',  # Netflix India
-        'UC_IRUbMCnBQh5X5hTLjWLpA',  # Prime Video
-        'UCmEDwvvN9LiRh0dMjB8RWLA',  # Prime Video India
-        'UCzWQYUVCpZqtN93H8RR44Qw',  # Apple TV+
-        'UC9-y-6csu5WGm29I7JiwpnA',  # Computerphile (safety — won't match trailers)
-        'UCi8e0iOVk1fEOogdfu4YgfA',  # Disney+
-        'UCF9imwbTCaZCOcuZnWTFBkA',  # JioCinema
-        'UCvC4D8onUfXzvjTOM-dBfEA',  # Warner Bros. Pictures
-        'UCjmJDM5pRKbUlVIzDYwz-1A',  # Universal Pictures
-        'UCaw03IoN618hT5-bXu6LoAA',  # Paramount Pictures
-        'UCYLbpjXO5BwstZXhBpqECRg',  # Lionsgate Movies
-        'UCgMPP6RejnQEoEX-bwOFZLA',  # A24
-        'UCR_Gp53bEfFTL2W6VLMJ15g',  # Sony Pictures Entertainment
-        'UCWX3yGbOBE3mMSBSCVDzK4g',  # Yash Raj Films
-        'UCFFbwnve3yF62-tVXkTyHqg',  # T-Series
-        'UC9zY_E8mcAo_Oq772LEZq8Q',  # Dharma Productions
-        'UCiEEF51uRAeZeCo8CJFhGWw',  # Zee Studios
-    }
-
-    def _youtube_trailer_fallback(self, title: str, year: int = None) -> str | None:
-        """
-        Search YouTube for an official trailer when TMDb /videos returns nothing.
-
-        Strategy:
-          1. Query: '{title} {year} official trailer'
-          2. Accept top result ONLY if it comes from a trusted channel
-             (name substring match OR channel ID allowlist).
-          3. Hard-reject anything with 'reaction', 'review', 'fan-made',
-             'breakdown', 'explained', 'analysis', 'ranked' in the title —
-             these are the most common false positives.
-
-        Quota cost: 100 units per call (YouTube Data API v3 search).
-        Only called when TMDb has no trailer, so real-world hit rate is low.
-        """
-        yt_key = Config.YOUTUBE_API_KEY
-        if not yt_key:
-            return None
-
-        query = f"{title} {year} official trailer" if year else f"{title} official trailer"
-
-        # Words that indicate it's NOT an official trailer
-        REJECT_WORDS = {
-            'reaction', 'review', 'fan made', 'fan-made', 'breakdown',
-            'explained', 'analysis', 'ranked', 'every scene', 'all scenes',
-            'deleted', 'behind the scenes', 'making of', 'interview',
-            'featurette', 'clip', 'scene', 'spoiler',
-        }
-
-        try:
-            r = self._session.get(
-                'https://www.googleapis.com/youtube/v3/search',
-                params={
-                    'part':       'snippet',
-                    'q':          query,
-                    'type':       'video',
-                    'maxResults': 5,          # fetch 5, pick best trusted one
-                    'order':      'relevance',
-                    'key':        yt_key,
-                },
-                timeout=10,
-            )
-            if r.status_code == 403:
-                # Quota exhausted — fail silently, don't spam logs
-                return None
-            if not r.ok:
-                return None
-
-            items = r.json().get('items', [])
-            for item in items:
-                vid_id      = item.get('id', {}).get('videoId', '')
-                snippet     = item.get('snippet', {})
-                vid_title   = snippet.get('title', '').lower()
-                channel     = snippet.get('channelTitle', '').lower()
-                channel_id  = snippet.get('channelId', '')
-
-                if not vid_id:
-                    continue
-
-                # Hard-reject non-trailer content
-                if any(w in vid_title for w in REJECT_WORDS):
-                    continue
-
-                # Must contain 'trailer' or 'teaser' somewhere in the video title
-                if 'trailer' not in vid_title and 'teaser' not in vid_title:
-                    continue
-
-                # Accept if channel name contains a trusted substring OR
-                # channel ID is in our verified allowlist
-                name_trusted = any(t in channel for t in self._TRUSTED_CHANNEL_NAMES)
-                id_trusted   = channel_id in self._TRUSTED_CHANNEL_IDS
-
-                if name_trusted or id_trusted:
-                    return vid_id
-
-            return None   # nothing trusted found
-
-        except Exception:
-            return None
 
 # ============================================================================
 # DISCOVER FLOW - NO REVIEWS, JUST AVAILABILITY
@@ -3327,21 +3194,15 @@ class AsyncWatchNowPipeline:
                 asyncio.get_running_loop().run_in_executor(self._executor, self._critics_sync,
                                      content_id, title, media_type, year, is_hindi),
                 asyncio.get_running_loop().run_in_executor(self._executor,
-                                     self.tmdb.get_runtime_and_trailer, tmdb_id, media_type,
-                                     title, year),
+                                     self.tmdb.get_runtime_and_trailer, tmdb_id, media_type),
                 return_exceptions=True
             )
 
             # Patch content row with runtime + trailer if we got them
             if isinstance(details, dict) and any(v is not None for v in details.values()):
                 try:
-                    yt_fallback = details.pop('_yt_fallback', False)
                     self.db.table('content').update(details).eq('id', content_id).execute()
-                    yt_fallback = details.get('_yt_fallback', False)
-                    trailer_note = ''
-                    if details.get('trailer_id'):
-                        src = '🔍 YT fallback' if yt_fallback else '🎬 TMDb'
-                        trailer_note = f" {src}={details['trailer_id'][:8]}.."
+                    trailer_note = f" 🎬 trailer={details['trailer_id'][:8]}.." if details.get('trailer_id') else ''
                     runtime_note = ''
                     if details.get('runtime'):
                         h, m = divmod(details['runtime'], 60)
@@ -3538,8 +3399,8 @@ class JustWatchFetcher:
     OFFERS_Q = """
     query GetTitleOffers($nodeId: ID!, $country: Country!) {
       node(id: $nodeId) {
-        ... on Movie { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
-        ... on Show  { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
+        ... on Movie { offers(country: $country, platform: WEB) { standardWebURL validUntil package { shortName } } }
+        ... on Show  { offers(country: $country, platform: WEB) { standardWebURL validUntil package { shortName } } }
       }
     }
     """
@@ -3569,33 +3430,31 @@ class JustWatchFetcher:
     def _find_stream_url(self, title, media_type, platform):
         """
         Search JustWatch for title, then check offers on each candidate node
-        until we find one that has the target platform. This avoids picking
-        the wrong movie when multiple results share the same type (e.g. Pushpa 1
-        and Pushpa 2 both return as Movie — we need the one on Netflix specifically).
+        until we find one that has the target platform. Returns (url, leaving_date).
         """
         data = self._gql(self.SEARCH_Q, {'searchQuery': title, 'country': 'IN', 'first': 8})
         if not data:
-            return None
+            return None, None
 
         edges = data.get('data', {}).get('popularTitles', {}).get('edges', [])
         want = 'Movie' if media_type != 'tv' else 'Show'
 
-        # Check candidates of the right type first, then fall back to any type
         candidates = [e['node']['id'] for e in edges if e['node'].get('__typename') == want]
         fallback   = [e['node']['id'] for e in edges if e['node'].get('__typename') != want]
 
         for node_id in candidates + fallback:
-            url = self._get_stream_url(node_id, platform)
+            url, leaving_date = self._get_stream_url(node_id, platform)
             if url:
-                return url
-            time.sleep(0.2)   # polite between offer checks
+                return url, leaving_date
+            time.sleep(0.2)
 
-        return None
+        return None, None
 
     def _get_stream_url(self, node_id, platform):
+        """Returns (stream_url, leaving_date) where leaving_date is ISO string or None."""
         data = self._gql(self.OFFERS_Q, {'nodeId': node_id, 'country': 'IN'})
         if not data:
-            return None
+            return None, None
         offers = (data.get('data', {}).get('node') or {}).get('offers', [])
         seen = set()
         for offer in offers:
@@ -3603,9 +3462,12 @@ class JustWatchFetcher:
             plat  = self.PLATFORM_MAP.get(short)
             url   = offer.get('standardWebURL', '')
             if plat == platform and url and plat not in seen:
-                return url
+                # validUntil is ISO-8601 datetime string e.g. "2025-03-30T00:00:00"
+                valid_until = offer.get('validUntil')
+                leaving_date = valid_until[:10] if valid_until else None
+                return url, leaving_date
             seen.add(plat)
-        return None
+        return None, None
 
     def _fetch_and_update(self, rows, table_name):
         """Fetch JustWatch URLs concurrently and update the table."""
@@ -3644,7 +3506,7 @@ class JustWatchFetcher:
             media_type = item['content_type']
             platform   = item['platform']
             data = _gql_local(self.SEARCH_Q, {'searchQuery': title, 'country': 'IN', 'first': 8})
-            if not data: return item, None
+            if not data: return item, None, None
             edges = data.get('data', {}).get('popularTitles', {}).get('edges', [])
             want = 'Movie' if media_type != 'tv' else 'Show'
             candidates = [e['node']['id'] for e in edges if e['node'].get('__typename') == want]
@@ -3659,9 +3521,11 @@ class JustWatchFetcher:
                     plat  = self.PLATFORM_MAP.get(short)
                     url   = offer.get('standardWebURL', '')
                     if plat == platform and url and plat not in seen:
-                        return item, url
+                        valid_until  = offer.get('validUntil')
+                        leaving_date = valid_until[:10] if valid_until else None
+                        return item, url, leaving_date
                     seen.add(plat)
-            return item, None
+            return item, None, None
 
         MAX_JW_WORKERS = 20  # conservative — avoids JustWatch throttling
         with ThreadPoolExecutor(max_workers=MAX_JW_WORKERS) as executor:
@@ -3669,17 +3533,22 @@ class JustWatchFetcher:
             done = 0
             for future in as_completed(futures):
                 done += 1
-                item, url = future.result()
+                item, url, leaving_date = future.result()
                 title = item['title']
                 if not url:
                     if done % 50 == 0:
                         print(f"   ⏳ {done}/{len(rows)} processed...")
                     continue
                 try:
-                    self.db.table(table_name).update({'stream_url': url}).eq('id', item['id']).execute()
+                    update_payload = {'stream_url': url}
+                    # Always write leaving_date — None clears a stale date if the
+                    # licence was renewed and JustWatch no longer reports one
+                    update_payload['leaving_date'] = leaving_date
+                    self.db.table(table_name).update(update_payload).eq('id', item['id']).execute()
                     with lock:
                         updated += 1
-                    print(f"   ✅ {title[:38]:<38} → {url[:56]}")
+                    leaving_note = f"  ⏳ leaves {leaving_date}" if leaving_date else ''
+                    print(f"   ✅ {title[:38]:<38} → {url[:46]}{leaving_note}")
                 except Exception as e:
                     print(f"   ❌ DB: {str(e)[:60]}")
 
@@ -3690,11 +3559,14 @@ class JustWatchFetcher:
         print("🔗 FETCHING DIRECT STREAMING LINKS — Watch Now (JustWatch)")
         print("="*70)
 
-        rows = self.db.table('content').select('id, title, content_type, platform').execute()
+        rows = self.db.table('content').select(
+            'id, title, content_type, platform, stream_url, leaving_date'
+        ).execute()
         if not rows.data:
             print("⚡️ No Watch Now content found")
             return
 
+        # Always re-fetch Watch Now — catalog refreshes weekly so expiry dates change
         updated = self._fetch_and_update(rows.data, 'content')
         print(f"\n✅ {updated}/{len(rows.data)} Watch Now titles got direct stream links")
 
@@ -3706,7 +3578,9 @@ class JustWatchFetcher:
         # Paginate to bypass Supabase 1000 row default limit
         all_data = []
         for start in range(0, 10000, 1000):
-            page = self.db.table('discover_content').select('id, title, content_type, platform, stream_url').range(start, start + 999).execute()
+            page = self.db.table('discover_content').select(
+                'id, title, content_type, platform, stream_url, leaving_date'
+            ).range(start, start + 999).execute()
             if not page.data:
                 break
             all_data.extend(page.data)
@@ -3721,14 +3595,21 @@ class JustWatchFetcher:
             print("⚡️ No Discover content found")
             return
 
-        # Skip rows that already have a stream_url to avoid redundant API calls
-        rows_needing_url = [r for r in rows.data if not r.get('stream_url')]
-        skipped = len(rows.data) - len(rows_needing_url)
+        # Process rows that either:
+        #   a) have no stream_url yet, OR
+        #   b) have a stream_url but leaving_date has never been checked
+        #      (stream_url present but leaving_date column is NULL means it was
+        #       fetched before expiry tracking was added — re-check it)
+        rows_needing_update = [
+            r for r in rows.data
+            if not r.get('stream_url') or r.get('leaving_date') is None
+        ]
+        skipped = len(rows.data) - len(rows_needing_update)
         if skipped:
-            print(f"   ⏭️  Skipping {skipped} titles that already have stream URLs")
+            print(f"   ⏭️  Skipping {skipped} titles already fully up to date")
 
-        updated = self._fetch_and_update(rows_needing_url, 'discover_content')
-        print(f"\n✅ {updated}/{len(rows_needing_url)} Discover titles got direct stream links")
+        updated = self._fetch_and_update(rows_needing_update, 'discover_content')
+        print(f"\n✅ {updated}/{len(rows_needing_update)} Discover titles updated")
 
 
 # ============================================================================
@@ -3750,7 +3631,7 @@ def _enrich_discover_details():
     all_rows = []
     for start in range(0, 50000, 1000):
         page = db.table('discover_content').select(
-            'id, tmdb_id, title, release_year, content_type, trailer_id, runtime, episode_runtime'
+            'id, tmdb_id, content_type, trailer_id, runtime, episode_runtime'
         ).range(start, start + 999).execute()
         if not page.data:
             break
@@ -3803,14 +3684,8 @@ def _enrich_discover_details():
     errors  = 0
 
     def _enrich_one(row):
-        details = tmdb.get_runtime_and_trailer(
-            row['tmdb_id'], row['content_type'],
-            title=row.get('title'), year=row.get('release_year'),
-        )
-        details.pop('_yt_fallback', None)   # internal flag — not a DB column
+        details = tmdb.get_runtime_and_trailer(row['tmdb_id'], row['content_type'])
         if any(v is not None for v in details.values()):
-            if details.get('trailer_id'):
-                print(f"   🔍 YT fallback trailer: {row.get('title','?')[:45]}")
             db.table('discover_content').update(details).eq('id', row['id']).execute()
         return details
 

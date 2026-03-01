@@ -606,7 +606,7 @@ def load_all_data():
         db = create_client(url, key)
         sr = db.table('scores').select('*, content(*), vibe_score, vibe_label').order('final_score', desc=True).execute()
         # Supabase caps at 1000 rows by default — fetch in two pages
-        COLS = 'id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime'
+        COLS = 'id,tmdb_id,title,platform,content_type,release_year,imdb_rating,poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,popularity,runtime,seasons,episode_count,episode_runtime,leaving_date'
         all_discover = []
         for start in range(0, 50000, 1000):
             page = db.table('discover_content').select(COLS).order('popularity', desc=True).range(start, start + 999).execute()
@@ -705,7 +705,8 @@ def to_js(data, disc=False):
                 'stream_url': safe(r.get('stream_url', '')),
                 'hindi_dub': bool(r.get('hindi_dub', False)),
                 'binge': binge,
-                'trailer_id': safe(r.get('trailer_id', ''))})
+                'trailer_id': safe(r.get('trailer_id', '')),
+                'leaving_date': safe(r.get('leaving_date', ''))})
         else:
             out.append({'title': safe(r.get('title')), 'platform': safe(r.get('platform')),
                 'type': safe(r.get('content_type')), 'year': safe(r.get('release_year')),
@@ -1588,131 +1589,37 @@ body:has(.dc:hover) #cursor-ring {
 }
 .wl-remove-btn:hover { background: rgba(255,68,85,0.1); border-color: #FF4455; }
 
-/* ── VIBE SEARCH PANEL ── */
-.vibe-panel {
-  border: 1px solid rgba(232,197,71,0.4);
-  border-radius: 10px;
-  background: rgba(232,197,71,0.04);
-  margin-bottom: 28px;
-  overflow: hidden;
-  box-shadow: 0 0 24px rgba(232,197,71,0.06);
-}
-
-/* Header */
-.vibe-panel-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 20px 12px;
-  border-bottom: 1px solid rgba(232,197,71,0.15);
-}
-.vibe-panel-title {
-  display: flex; align-items: center; gap: 10px;
-  font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
-  letter-spacing: 0.12em; text-transform: uppercase; color: #E8C547;
-}
-.vibe-panel-icon { font-size: 1.1rem; }
-.vibe-panel-badge {
-  background: rgba(232,197,71,0.15); border: 1px solid rgba(232,197,71,0.4);
-  color: #E8C547; font-family: var(--mono); font-size: 0.5rem;
-  letter-spacing: 0.18em; padding: 2px 7px; border-radius: 3px;
-  font-weight: 700;
-}
-.vibe-panel-toggle {
-  background: transparent; border: 1px solid rgba(255,255,255,0.12);
-  color: #666; font-family: var(--mono); font-size: 0.58rem;
-  letter-spacing: 0.1em; padding: 5px 12px; border-radius: 4px;
-  cursor: pointer; transition: all .2s; white-space: nowrap;
-}
-.vibe-panel-toggle:hover { border-color: rgba(232,197,71,0.4); color: #E8C547; }
-.vibe-panel-toggle.open { color: #E8C547; border-color: rgba(232,197,71,0.4); }
-
-/* Explainer */
-.vibe-explainer {
-  max-height: 0; overflow: hidden;
-  transition: max-height 0.4s cubic-bezier(0.4,0,0.2,1);
-}
-.vibe-explainer.open { max-height: 500px; }
-.vibe-explainer-inner {
-  padding: 20px 20px 4px;
-  border-bottom: 1px solid rgba(232,197,71,0.1);
-}
-.vibe-explain-text {
-  font-size: 0.72rem; color: #aaa; line-height: 1.7;
-  margin: 0 0 18px; font-family: var(--sans, sans-serif);
-}
-.vibe-explain-text strong { color: #E8C547; font-weight: 600; }
-
-/* Pipeline */
-.vibe-pipeline {
-  display: flex; align-items: center; gap: 6px;
-  flex-wrap: wrap; margin-bottom: 20px;
-}
-.vibe-step {
-  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 6px; padding: 10px 14px; text-align: center; min-width: 100px;
-}
-.vibe-step-icon { font-size: 1.2rem; margin-bottom: 4px; }
-.vibe-step-label {
-  font-family: var(--mono); font-size: 0.6rem; font-weight: 700;
-  color: #ddd; letter-spacing: 0.06em; text-transform: uppercase;
-}
-.vibe-step-sub {
-  font-size: 0.56rem; color: #555; margin-top: 3px; font-family: var(--mono);
-}
-.vibe-arrow { color: #E8C547; font-size: 1rem; opacity: 0.6; flex-shrink: 0; }
-
-/* Example chips */
-.vibe-examples-label {
-  font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.12em;
-  text-transform: uppercase; color: #555; margin-bottom: 10px;
-}
-.vibe-examples {
-  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px;
-}
-.vibe-example {
-  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
-  color: #999; font-family: var(--mono); font-size: 0.6rem;
-  letter-spacing: 0.04em; padding: 6px 12px; border-radius: 20px;
-  cursor: pointer; transition: all .18s; white-space: nowrap;
-}
-.vibe-example:hover {
-  border-color: rgba(232,197,71,0.5); color: #E8C547;
-  background: rgba(232,197,71,0.07);
-}
-
-/* Search bar */
+/* ── VIBE SEARCH ── */
 .vibe-bar {
   display: flex; align-items: center; gap: 10px;
-  padding: 14px 20px;
+  background: rgba(232,197,71,0.07);
+  border: 1px solid rgba(232,197,71,0.45);
+  border-radius: 6px; padding: 12px 18px; margin-bottom: 24px;
   transition: border-color .2s;
 }
-.vibe-bar:focus-within { background: rgba(232,197,71,0.04); }
+.vibe-bar:focus-within { border-color: rgba(232,197,71,0.8); box-shadow: 0 0 0 3px rgba(232,197,71,0.08); }
+.vibe-icon { font-size: 1.2rem; flex-shrink: 0; }
 .vibe-input {
-  flex: 1; background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 6px; outline: none; padding: 10px 14px;
-  color: #fff; font-family: var(--mono); font-size: 0.74rem;
-  letter-spacing: 0.03em; transition: border-color .2s;
+  flex: 1; background: transparent; border: none; outline: none;
+  color: #fff; font-family: var(--mono); font-size: 0.75rem;
+  letter-spacing: 0.04em;
 }
-.vibe-input:focus { border-color: rgba(232,197,71,0.6); }
-.vibe-input::placeholder { color: #555; }
+.vibe-input::placeholder { color: #888; }
 .vibe-btn {
-  background: #E8C547; border: none; border-radius: 6px;
+  background: #E8C547; border: none; border-radius: 4px;
   color: #07070A; font-family: var(--mono); font-size: 0.65rem;
   font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
-  padding: 10px 20px; cursor: pointer; flex-shrink: 0; transition: background .2s;
-  white-space: nowrap;
+  padding: 7px 16px; cursor: pointer; flex-shrink: 0; transition: background .2s;
 }
 .vibe-btn:hover { background: #f0d060; }
 .vibe-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .vibe-clear-btn {
-  background: transparent; border: 1px solid rgba(255,255,255,0.12);
-  color: #666; font-family: var(--mono); font-size: 0.6rem;
-  letter-spacing: 0.08em; padding: 9px 14px; border-radius: 6px;
-  cursor: pointer; flex-shrink: 0; transition: all .2s; white-space: nowrap;
+  background: transparent; border: 1px solid rgba(255,255,255,0.15);
+  color: #888; font-family: var(--mono); font-size: 0.62rem;
+  letter-spacing: 0.08em; padding: 6px 12px; border-radius: 4px;
+  cursor: pointer; flex-shrink: 0; transition: all .2s;
 }
 .vibe-clear-btn:hover { border-color: #aaa; color: #ccc; }
-
-/* Results */
 .vibe-results-label {
   color: var(--gold); font-family: var(--mono); font-size: 0.65rem;
   letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;
@@ -1809,6 +1716,26 @@ body:has(.dc:hover) #cursor-ring {
   padding: 2px 6px; border-radius: 1px;
   background: rgba(255,255,255,0.03);
   border: 1px solid currentColor; opacity: 0.8;
+}
+/* ── Leaving Soon badge ── */
+.dc-leaving {
+  display: flex; align-items: center; gap: 5px;
+  font-family: var(--mono); font-size: 0.58rem;
+  font-weight: 700; letter-spacing: 0.06em;
+  color: #FF4455;
+  background: rgba(255, 68, 85, 0.1);
+  border: 1px solid rgba(255, 68, 85, 0.45);
+  border-radius: 3px; padding: 3px 8px;
+  animation: leavingPulse 2.5s ease-in-out infinite;
+}
+.dc-leaving.soon {   /* ≤ 7 days — more urgent */
+  color: #FF2233;
+  background: rgba(255, 34, 51, 0.18);
+  border-color: rgba(255, 34, 51, 0.7);
+}
+@keyframes leavingPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
 }
 .jw-link {
   font-family: var(--mono); font-size: 0.48rem;
@@ -2115,84 +2042,15 @@ body:has(.dc:hover) #cursor-ring {
 <!-- ── DISCOVER TAB ── -->
 <div id="tab-disc" style="display:none">
 
-  <!-- ── VIBE SEARCH PANEL ── -->
-  <div class="vibe-panel">
-
-    <!-- Header row -->
-    <div class="vibe-panel-header">
-      <div class="vibe-panel-title">
-        <span class="vibe-panel-icon">🔮</span>
-        <span>Vibe Search</span>
-        <span class="vibe-panel-badge">AI</span>
-      </div>
-      <button class="vibe-panel-toggle" onclick="toggleVibeExplainer(this)" title="How it works">
-        How it works ↓
-      </button>
-    </div>
-
-    <!-- Explainer — collapsible -->
-    <div class="vibe-explainer" id="vibe-explainer">
-      <div class="vibe-explainer-inner">
-
-        <!-- What it is -->
-        <p class="vibe-explain-text">
-          Unlike keyword search, Vibe Search <strong>understands meaning</strong> — describe a mood, a feeling, a plot, or a theme in plain English and it finds the closest matches across all 4000+ titles in the catalog.
-        </p>
-
-        <!-- How it works — pipeline -->
-        <div class="vibe-pipeline">
-          <div class="vibe-step">
-            <div class="vibe-step-icon">✍️</div>
-            <div class="vibe-step-label">Your query</div>
-            <div class="vibe-step-sub">plain English</div>
-          </div>
-          <div class="vibe-arrow">→</div>
-          <div class="vibe-step">
-            <div class="vibe-step-icon">🧠</div>
-            <div class="vibe-step-label">Gemini AI</div>
-            <div class="vibe-step-sub">converts to 3072-dim vector</div>
-          </div>
-          <div class="vibe-arrow">→</div>
-          <div class="vibe-step">
-            <div class="vibe-step-icon">📐</div>
-            <div class="vibe-step-label">Vector similarity</div>
-            <div class="vibe-step-sub">cosine distance across catalog</div>
-          </div>
-          <div class="vibe-arrow">→</div>
-          <div class="vibe-step">
-            <div class="vibe-step-icon">🎯</div>
-            <div class="vibe-step-label">Top matches</div>
-            <div class="vibe-step-sub">ranked by % match</div>
-          </div>
-        </div>
-
-        <!-- Example prompts -->
-        <div class="vibe-examples-label">Try these →</div>
-        <div class="vibe-examples">
-          <button class="vibe-example" onclick="useVibeExample(this)">mind-bending sci-fi with a twist ending</button>
-          <button class="vibe-example" onclick="useVibeExample(this)">feel-good comedy to watch with family</button>
-          <button class="vibe-example" onclick="useVibeExample(this)">dark psychological thriller, slow burn</button>
-          <button class="vibe-example" onclick="useVibeExample(this)">based on true events, crime investigation</button>
-          <button class="vibe-example" onclick="useVibeExample(this)">epic fantasy with magic and war</button>
-          <button class="vibe-example" onclick="useVibeExample(this)">romantic drama that will make me cry</button>
-          <button class="vibe-example" onclick="useVibeExample(this)">something like Inception or Interstellar</button>
-          <button class="vibe-example" onclick="useVibeExample(this)">underdog sports story, very motivating</button>
-        </div>
-
-      </div>
-    </div>
-
-    <!-- Search bar -->
-    <div class="vibe-bar">
-      <input id="vibe-input" class="vibe-input"
-        placeholder="Describe a mood, genre, plot, or feeling…"
-        autocomplete="off" spellcheck="false"/>
-      <button class="vibe-btn" id="vibe-btn" onclick="vibeSearch()">Search</button>
-      <button class="vibe-clear-btn" id="vibe-clear-btn" onclick="vibeClear()" style="display:none">✕ Clear</button>
-    </div>
-
-  </div><!-- /vibe-panel -->
-
+  <!-- ── VIBE SEARCH BAR ── -->
+  <div class="vibe-bar">
+    <span class="vibe-icon">🔮</span>
+    <input id="vibe-input" class="vibe-input"
+      placeholder="Vibe search… e.g. 'mind-bending sci-fi with a twist ending'"
+      autocomplete="off" spellcheck="false"/>
+    <button class="vibe-btn" id="vibe-btn" onclick="vibeSearch()">Search</button>
+    <button class="vibe-clear-btn" id="vibe-clear-btn" onclick="vibeClear()" style="display:none">✕ Clear</button>
+  </div>
   <div id="vibe-results-section" style="display:none">
     <div class="vibe-results-label">✨ Semantic matches for "<span id="vibe-query-label"></span>"</div>
     <div class="disc-grid" id="vibe-grid"></div>
@@ -2212,6 +2070,7 @@ body:has(.dc:hover) #cursor-ring {
     <button class="pill" data-dt="tv"       onclick="sdT('tv',this)">Series</button>
     <div class="ctrl-sep"></div>
     <button class="pill" id="d-hindi-btn" onclick="toggleHindiD(this)">🎙 Hindi Dub</button>
+    <button class="pill" id="d-leaving-btn" onclick="toggleLeavingD(this)">⏳ Last Chance</button>
   </div>
   <div class="ctrl">
     <div id="disc-cat-pills" style="display:contents"></div>
@@ -2862,9 +2721,22 @@ function wSo(v)  { wSort=v; renderWatch(); }
 let dPlat = 'all';
 let dType = 'all';
 
+/* Returns days until a YYYY-MM-DD date string, or null if absent/unparseable */
+function _daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const diff = new Date(dateStr) - new Date();
+  if (isNaN(diff)) return null;
+  return Math.ceil(diff / 86400000);
+}
+
 function getFD() {
   return D
     .filter(d => !window._dHindi || d.hindi_dub === true)
+    .filter(d => {
+      if (!window._dLeaving) return true;
+      const days = _daysUntil(d.leaving_date);
+      return days !== null && days >= 0 && days <= 30;
+    })
     .filter(d => {
       if (dCat === 'all') return true;
       if (dCat === 'genre_picks') return d.category && d.category.startsWith('genre_');
@@ -2885,7 +2757,15 @@ function getFD() {
     .filter(d => dPlat==='all' || d.platform===dPlat)
     .filter(d => dType==='all' || d.type===dType)
     .filter(d => !dSearch || d.title.toLowerCase().includes(dSearch.toLowerCase()))
-    .sort((a,b) => b.rating - a.rating);
+    .sort((a,b) => {
+      // When "Last Chance" filter is on, sort by soonest leaving first
+      if (window._dLeaving) {
+        const da = _daysUntil(a.leaving_date) ?? 9999;
+        const db_ = _daysUntil(b.leaving_date) ?? 9999;
+        return da - db_;
+      }
+      return b.rating - a.rating;
+    });
 }
 
 function renderDisc() {
@@ -2935,6 +2815,15 @@ function renderDisc() {
     <div class="dc-title">${d.title}</div>
     <div class="dc-sub">${d.type==='tv'?'Series':'Film'} · ${d.year} · ${d.platform}</div>
     ${d.binge ? `<div class="dc-binge">⏱ ${d.binge}</div>` : ''}
+    ${(() => {
+      const days = _daysUntil(d.leaving_date);
+      if (days === null || days < 0) return '';
+      const urgency = days <= 7 ? 'soon' : '';
+      const label = days === 0 ? 'Leaving today!'
+                  : days === 1 ? 'Leaving tomorrow'
+                  : `Leaving in ${days}d`;
+      return `<div class="dc-leaving ${urgency}">⏳ ${label}</div>`;
+    })()}
     <div class="dc-foot">
       ${d.rating ? `<span class="dc-rating">✦ ${d.rating.toFixed(1)}</span>` : ''}
       <span class="dc-tag" style="color:${catCol};border-color:${catCol}">${catLbl}</span>
@@ -3101,6 +2990,11 @@ function toggleHindiD(btn) {
   btn.classList.toggle('on', window._dHindi);
   renderDisc();
 }
+function toggleLeavingD(btn) {
+  window._dLeaving = !window._dLeaving;
+  btn.classList.toggle('on', window._dLeaving);
+  renderDisc();
+}
 
 function wWorth() {
   wSort = 'score';
@@ -3116,26 +3010,18 @@ function wPolar() {
 
 /* ── VIBE SEARCH (Edge Function) ── */
 
-/* Compute binge-time string from raw discover_content fields */
 function _vibeBinge(d) {
   const type = d.content_type;
   if (type !== 'tv') {
     const rt = parseInt(d.runtime);
-    if (rt > 0) {
-      const h = Math.floor(rt / 60), m = rt % 60;
-      return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
-    }
+    if (rt > 0) { const h = Math.floor(rt/60), m = rt%60; return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`; }
     return '';
   }
-  const seasons = parseInt(d.seasons);
-  const eps     = parseInt(d.episode_count);
-  const epRt    = parseInt(d.episode_runtime);
+  const seasons = parseInt(d.seasons), eps = parseInt(d.episode_count), epRt = parseInt(d.episode_runtime);
   let sLabel = seasons > 0 ? `${seasons} Season${seasons > 1 ? 's' : ''}` : '';
   if (sLabel && eps > 0 && epRt > 0) {
-    const totalMins = eps * epRt;
-    const h = Math.floor(totalMins / 60), m = totalMins % 60;
-    const timeStr = h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
-    return `${sLabel} · ${timeStr} total`;
+    const totalMins = eps * epRt, h = Math.floor(totalMins/60), m = totalMins%60;
+    return `${sLabel} · ${h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`} total`;
   }
   if (sLabel && eps > 0) return `${sLabel} · ${eps} eps`;
   return sLabel;
@@ -3151,14 +3037,19 @@ function _makeVibeCard(d, i) {
   const trailId  = d.trailer_id || '';
   const jwUrl    = `https://www.justwatch.com/in/search?q=${encodeURIComponent(d.title)}`;
 
+  // Leaving badge
+  const lDays = _daysUntil(d.leaving_date);
+  const lBadge = (lDays !== null && lDays >= 0)
+    ? `<div class="dc-leaving ${lDays <= 7 ? 'soon' : ''}">⏳ ${
+        lDays === 0 ? 'Leaving today!' : lDays === 1 ? 'Leaving tomorrow' : `Leaving in ${lDays}d`
+      }</div>` : '';
+
   let streamHref = d.stream_url || '';
   if (streamHref && streamHref.includes('netflix.com')) {
     const nm = streamHref.match(/netflix\.com\/(?:[a-z-]+\/)?(?:title|watch)\/(\d+)/);
     if (nm) {
       const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-      const isCriOS = /CriOS/i.test(navigator.userAgent);
-      const isBrave = /Brave/i.test(navigator.userAgent);
-      if (isIOS && !isCriOS && !isBrave) streamHref = 'nflx://www.netflix.com/title/' + nm[1];
+      if (isIOS && !/CriOS|Brave/i.test(navigator.userAgent)) streamHref = 'nflx://www.netflix.com/title/' + nm[1];
     }
   }
 
@@ -3179,6 +3070,7 @@ function _makeVibeCard(d, i) {
     <div class="dc-title">${d.title}</div>
     <div class="dc-sub">${d.content_type==='tv'?'Series':'Film'} · ${d.release_year||''} · ${d.platform||'—'}</div>
     ${binge ? `<div class="dc-binge">⏱ ${binge}</div>` : ''}
+    ${lBadge}
     <div class="dc-foot">
       ${d.imdb_rating ? `<span class="dc-rating">✦ ${parseFloat(d.imdb_rating).toFixed(1)}</span>` : ''}
       <span class="vibe-match-pct">🔮 ${matchPct}% match</span>
@@ -3188,7 +3080,8 @@ function _makeVibeCard(d, i) {
   </a>
   <div style="padding:6px 12px 10px;border-top:1px solid var(--v3);display:flex;flex-direction:column;gap:8px">
     ${streamHref
-      ? `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px" onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g,"\\'")}', this)">
+      ? `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px"
+           onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g,"\\'")}', this)">
            <span class="tv-icon">📋</span> Copy Title
          </button>
          <a href="${streamHref}" target="_blank" class="jw-link" style="color:${platCol}">&#9654; Watch on ${d.platform||'platform'}</a>`
@@ -3196,27 +3089,6 @@ function _makeVibeCard(d, i) {
     }
   </div>
 </div>`;
-}
-
-function toggleVibeExplainer(btn) {
-  const el = document.getElementById('vibe-explainer');
-  if (!el) return;
-  const open = el.classList.toggle('open');
-  btn.classList.toggle('open', open);
-  btn.textContent = open ? 'How it works ↑' : 'How it works ↓';
-}
-
-function useVibeExample(btn) {
-  const inp = document.getElementById('vibe-input');
-  if (inp) {
-    inp.value = btn.textContent;
-    inp.focus();
-  }
-  // Highlight the chosen chip briefly
-  document.querySelectorAll('.vibe-example').forEach(b => b.style.borderColor = '');
-  btn.style.borderColor = 'rgba(232,197,71,0.8)';
-  btn.style.color = '#E8C547';
-  setTimeout(() => { btn.style.borderColor = ''; btn.style.color = ''; }, 1200);
 }
 
 async function vibeSearch() {
