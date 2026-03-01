@@ -72,6 +72,8 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
         run: |
           if [[ "${{ inputs.mode }}" == "discover-only" ]]; then
             python3 streaming_tracker_v3.py --discover-only
