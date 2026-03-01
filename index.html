@@ -9,6 +9,11 @@
 <meta property="og:description" content="AI-scored movies &amp; shows across every major Indian streaming platform."/>
 <meta property="og:type" content="website"/>
 <meta name="theme-color" content="#E8C547"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="StreamIQ"/>
+<link rel="manifest" href="/manifest.json"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://image.tmdb.org" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Syne:wght@400;500;700;800&family=Syne+Mono&family=Spectral:ital,wght@0,300;0,400;1,300;1,400&display=swap" rel="stylesheet"/>
@@ -1550,6 +1555,31 @@ function _safe(v) {
   return String(v);
 }
 
+// ── CACHE HELPERS ────────────────────────────────────────────────────────
+const CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours in ms
+const CACHE_KEY_W = 'streamiq_W';
+const CACHE_KEY_D = 'streamiq_D';
+const CACHE_KEY_TS = 'streamiq_ts';
+
+function _cacheLoad() {
+  try {
+    const ts = parseInt(localStorage.getItem(CACHE_KEY_TS) || '0');
+    if (Date.now() - ts > CACHE_TTL) return null;
+    const w = localStorage.getItem(CACHE_KEY_W);
+    const d = localStorage.getItem(CACHE_KEY_D);
+    if (!w || !d) return null;
+    return { W: JSON.parse(w), D: JSON.parse(d) };
+  } catch(e) { return null; }
+}
+
+function _cacheSave(w, d) {
+  try {
+    localStorage.setItem(CACHE_KEY_W, JSON.stringify(w));
+    localStorage.setItem(CACHE_KEY_D, JSON.stringify(d));
+    localStorage.setItem(CACHE_KEY_TS, String(Date.now()));
+  } catch(e) {} // ignore QuotaExceededError — cache is best-effort
+}
+
 async function loadData() {
   if (!SUPA_URL || !SUPA_ANON) {
     document.getElementById('app').innerHTML =
@@ -1557,9 +1587,31 @@ async function loadData() {
     return;
   }
 
+  // ── Try cache first — paint UI instantly on repeat visits ───────────────
+  const cached = _cacheLoad();
+  if (cached) {
+    W = cached.W;
+    D = cached.D;
+    rebuildWIdxMap();
+    renderWatchGenrePills();
+    renderWatch();
+    _restoreHashPanel();
+    renderDiscPills();
+    renderDisc();
+    _updateDiscTabBadge();
+    // Refresh cache silently in background — user already sees content
+    _loadFromNetwork(true);
+    return;
+  }
+
+  // ── No cache — fetch from network normally ──────────────────────────────
+  await _loadFromNetwork(false);
+}
+
+async function _loadFromNetwork(isBackgroundRefresh) {
   const headers = { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON };
 
-  // ── Watch Now: scores joined with content ────────────────────────────────
+  // ── Watch Now ────────────────────────────────────────────────────────────
   try {
     const SCORE_COLS = 'content_id,final_score,label,youtube_score,reddit_score,imdb_score,' +
       'review_count,positive_ratio,is_polarizing,vibe_score,vibe_label,' +
@@ -1598,7 +1650,6 @@ async function loadData() {
         tv_genre:         _safe(c.tv_genre),
         vibe_score:       row.vibe_score != null ? parseFloat(row.vibe_score) : null,
         vibe_label:       _safe(row.vibe_label),
-        // keep raw fields for _vibeBinge fallback
         content_type:     _safe(c.content_type),
         runtime:          c.runtime,
         seasons:          c.seasons,
@@ -1610,15 +1661,14 @@ async function loadData() {
     console.error('Watch Now load error:', e);
   }
 
-  // ── Render Watch Now immediately — don't wait for Discover ──────────────
-  rebuildWIdxMap();
-  renderWatchGenrePills();
-  renderWatch();
+  if (!isBackgroundRefresh) {
+    rebuildWIdxMap();
+    renderWatchGenrePills();
+    renderWatch();
+    _restoreHashPanel();
+  }
 
-  // Restore panel if user landed on a deep-link URL (e.g. shared #movie-1234)
-  _restoreHashPanel();
-
-  // ── Discover: fetch all pages in parallel, then render ───────────────────
+  // ── Discover ─────────────────────────────────────────────────────────────
   const DISC_COLS = 'id,tmdb_id,title,platform,content_type,release_year,imdb_rating,' +
     'poster_path,category,genre,tv_genre,stream_url,hindi_dub,trailer_id,' +
     'popularity,runtime,seasons,episode_count,episode_runtime,leaving_date';
@@ -1650,8 +1700,6 @@ async function loadData() {
   }
 
   try {
-    // Fetch page 1 with count=exact so we know exactly how many rows exist
-    // This avoids the "thundering herd" of 19 blind parallel requests
     const firstRes = await fetch(
       `${SUPA_URL}/rest/v1/discover_content?select=${DISC_COLS}&order=popularity.desc&offset=0&limit=${PAGE}`,
       { headers: { ...headers, 'Prefer': 'count=exact' } }
@@ -1659,12 +1707,12 @@ async function loadData() {
     const firstBatch = await firstRes.json();
     D = Array.isArray(firstBatch) ? _parseDiscBatch(firstBatch) : [];
 
-    // Render Discover with first page immediately — user sees content fast
-    renderDiscPills();
-    renderDisc();
-    _updateDiscTabBadge();
+    if (!isBackgroundRefresh) {
+      renderDiscPills();
+      renderDisc();
+      _updateDiscTabBadge();
+    }
 
-    // Use Content-Range header to know exact total — only fire as many requests as needed
     const contentRange = firstRes.headers.get('content-range');
     const totalCount   = contentRange ? parseInt(contentRange.split('/')[1]) : 0;
     const pagesNeeded  = totalCount > PAGE ? Math.ceil(totalCount / PAGE) - 1 : 0;
@@ -1672,7 +1720,6 @@ async function loadData() {
     if (pagesNeeded > 0) {
       const offsets = [];
       for (let i = 1; i <= pagesNeeded; i++) offsets.push(i * PAGE);
-
       const remaining = await Promise.all(
         offsets.map(off =>
           fetch(
@@ -1681,16 +1728,13 @@ async function loadData() {
           ).then(r => r.json()).catch(() => [])
         )
       );
-
       let gotAny = false;
       for (const batch of remaining) {
         if (!Array.isArray(batch) || !batch.length) break;
         D.push(..._parseDiscBatch(batch));
         gotAny = true;
       }
-
-      // Re-render Discover with full dataset
-      if (gotAny) {
+      if (gotAny && !isBackgroundRefresh) {
         renderDiscPills();
         renderDisc();
         _updateDiscTabBadge();
@@ -1698,6 +1742,19 @@ async function loadData() {
     }
   } catch(e) {
     console.error('Discover load error:', e);
+  }
+
+  // ── Save to cache once both W and D are fully loaded ─────────────────────
+  if (W.length && D.length) _cacheSave(W, D);
+
+  // ── Background refresh: silently swap in fresh data ──────────────────────
+  if (isBackgroundRefresh) {
+    rebuildWIdxMap();
+    renderWatchGenrePills();
+    renderWatch();
+    renderDiscPills();
+    renderDisc();
+    _updateDiscTabBadge();
   }
 }
 
@@ -3154,6 +3211,13 @@ async function toggleTrack(d) {
 }
 
 /* keep-alive removed — not needed outside Streamlit */
+
+// ── PWA: Register Service Worker ─────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
 
 </script>
 </body>
