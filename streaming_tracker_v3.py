@@ -155,7 +155,6 @@ class Config:
         'Prime Video': 119,
         'Apple TV+': 350,
         'Jiohotstar': 2336,
-        'JioCinema': 220
     }
     
     # Genre IDs for TMDb
@@ -625,7 +624,7 @@ class TMDbResolver:
         't-series',
         'pen movies', 'pen marudhar',
         'eros now', 'eros movies',
-        'jiocinema', 'jio studios',
+        'jio studios',
         'excel entertainment',
         'maddock films',
         'tips films', 'tips official',
@@ -648,9 +647,15 @@ class TMDbResolver:
         'UC9zY_E8mcAo_Oq772LEZq8Q', 'UCiEEF51uRAeZeCo8CJFhGWw',
     }
 
+    _yt_fallback_calls = 0          # class-level counter shared across all instances
+    _yt_fallback_limit = 30         # max trailer fallback searches per process run
+    _yt_fallback_lock  = threading.Lock()
+
     def _youtube_trailer_fallback(self, title: str, year: int = None):
         """Search YouTube for an official trailer from a trusted channel only.
         Returns None rather than risk returning a fan-made or unofficial video.
+        Capped at _yt_fallback_limit calls per process run to protect daily quota —
+        trailer searches for 879 discover rows would cost 87,900 units otherwise.
 
         Two-pass strategy, both require a trusted channel:
           Pass 1: query with year — precise, avoids wrong-film hits
@@ -660,6 +665,16 @@ class TMDbResolver:
         yt_key = Config.YOUTUBE_API_KEY
         if not yt_key:
             return None
+
+        # Hard cap — protect daily quota from being consumed by trailer searches
+        with TMDbResolver._yt_fallback_lock:
+            if TMDbResolver._yt_fallback_calls >= TMDbResolver._yt_fallback_limit:
+                return None   # silent — no print spam for every skipped title
+            TMDbResolver._yt_fallback_calls += 1
+            current = TMDbResolver._yt_fallback_calls
+        if current == TMDbResolver._yt_fallback_limit:
+            print(f"   ⚠️  YouTube trailer fallback cap reached ({TMDbResolver._yt_fallback_limit} searches) — "
+                  f"skipping remaining. Increase TMDbResolver._yt_fallback_limit if needed.")
 
         REJECT = {
             'reaction', 'review', 'fan made', 'fan-made', 'fan trailer',
@@ -1133,6 +1148,11 @@ class DiscoverFlow:
 # ============================================================================
 
 class SentimentAnalyzer:
+    # Class-level lock: serialize ALL Groq calls across threads to avoid rate-limit storms.
+    # With 12 concurrent titles each calling Groq, all 12 hit the API simultaneously — instant 429.
+    # Serialising them with a lock means Groq gets one call at a time.
+    _groq_lock = threading.Lock()
+
     def __init__(self):
         # Always initialize VADER as final fallback
         from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -1185,8 +1205,7 @@ class SentimentAnalyzer:
                 result = self._groq_analyze(text)
                 if result:
                     return result
-                if self.groq_rate_limit_until <= _t.time():  # only print if not rate limited
-                    print("    ⤵️ Groq failed, falling back to Gemini...")        
+                # silent fallback to Gemini/VADER
         # Try Tier 2: Gemini
         if self.use_gemini:
             result = self._gemini_analyze(text)
@@ -1198,42 +1217,45 @@ class SentimentAnalyzer:
     
     def _groq_analyze(self, text: str) -> Optional[Dict]:
         try:
-            response = self.groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{
-                    "role": "user",
-                    "content": f"""Analyze sentiment of this review. Return ONLY JSON:
+            with self._groq_lock:   # serialize across threads — avoid simultaneous 429s
+                response = self.groq_client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{
+                        "role": "user",
+                        "content": f"""Analyze sentiment of this review. Return ONLY JSON:
 {{"sentiment": -1 or 0 or 1, "confidence": 0.0 to 1.0}}
 
 Review: {text[:2000]}"""
-                }],
-                temperature=0.3,
-                max_tokens=50
-            )
-            
+                    }],
+                    temperature=0.3,
+                    max_tokens=50
+                )
+
             result_text = response.choices[0].message.content.strip()
             result_text = result_text.replace('```json', '').replace('```', '').strip()
-            
+
             import json
             result = json.loads(result_text)
-            
+
             sentiment = result.get('sentiment', 0)
             confidence = result.get('confidence', 0.5)
-            
+
             if sentiment not in [-1, 0, 1]:
                 sentiment = 0
             confidence = max(0.0, min(1.0, float(confidence)))
-            
+
             return {'sentiment': sentiment, 'confidence': confidence}
-            
+
         except Exception as e:
-            # Check if rate limited
-            if '429' in str(e) or 'rate' in str(e).lower():
+            err = str(e)
+            if '429' in err or 'rate' in err.lower():
                 import time as _t
-                self.groq_rate_limit_until = _t.time() + 60  # cooldown 60 seconds
+                self.groq_rate_limit_until = _t.time() + 60
                 print(f"  ⚡️ Groq rate limited — cooling down 60s, trying Gemini...")
+            elif 'Expecting value' in err or 'JSONDecodeError' in err or len(err.strip()) == 0:
+                pass  # empty response from Groq — silent fallback to Gemini, not an error
             else:
-                print(f"  ⚡️ Groq error: {str(e)[:100]}")
+                print(f"  ⚡️ Groq error: {err[:100]}")
             return None
     
     def _gemini_analyze(self, text: str) -> Optional[Dict]:
@@ -1386,22 +1408,168 @@ Return ONLY a JSON object, no extra text:
 # ============================================================================
 
 class RedditIngester:
-    # Reddit requires this exact UA format or returns 429/403
+    # OAuth2 authenticated — 998 req/window vs 10 unauthenticated.
+    # Token is fetched once per process and reused (expires in 24h).
+    _rate_lock = threading.Lock()
+    _last_call_time: float = 0.0
+    _oauth_token: Optional[str] = None          # shared across all instances
+    _token_expires_at: float = 0.0
+
+    # OAuth base — must use oauth.reddit.com when sending Bearer token
+    _OAUTH_BASE = "https://oauth.reddit.com"
+    _TOKEN_URL  = "https://www.reddit.com/api/v1/access_token"
+
     def __init__(self):
         self.sentiment = SentimentAnalyzer()
         self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        # Real browser UA — Reddit blocks bot-format UAs for unauthenticated JSON API requests
         self._session = requests.Session()
-        self._session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
-        # Noise phrases to filter out low-signal comments
+        self._TIMEOUT = (4, 8)
         self.noise_phrases = [
-            'edit:', 'source:', 'http', 'just here', 'this is the way',
-            'lol', 'lmao', 'haha', 'same', 'this', '^', 'deleted', 'removed'
+            'edit:', 'source:', 'just here', 'this is the way',
+            'lol', 'lmao', 'haha', '^', 'deleted', 'removed'
         ]
+        # Fetch OAuth token (or reuse cached one)
+        token = self._get_oauth_token()
+        if token:
+            self._session.headers.update({
+                'Authorization': f'Bearer {token}',
+                'User-Agent': 'python:streamiq.scraper:v3.0 (by /u/stream_tracker_bot)',
+            })
+            print("   🔑 Reddit OAuth active (998 req/window)")
+        else:
+            self._session.headers.update({
+                'User-Agent': 'python:streamiq.scraper:v3.0 (by /u/stream_tracker_bot)',
+            })
+            print("   ⚠️  Reddit OAuth unavailable — falling back to unauthenticated")
+        # Pre-load which content_ids already have fresh Reddit reviews
+        self._load_reddit_cache()
 
-    def _get_subreddits(self, title: str, media_type: str, is_hindi: bool) -> List[str]:
+    REDDIT_CACHE_TTL_HRS = 23   # skip re-scraping if reviews saved within last 23h
+
+    def _load_reddit_cache(self) -> None:
+        """
+        Load content_ids that already have Reddit reviews saved in the last 23h.
+        Mirrors the YT cache pattern — avoids hammering r/bollywood on every run.
+        """
+        try:
+            cutoff = (datetime.now() - timedelta(hours=self.REDDIT_CACHE_TTL_HRS)).isoformat()
+            rows = (self.db.table('reviews')
+                       .select('content_id')
+                       .eq('source', 'reddit')
+                       .gte('created_at', cutoff)
+                       .execute().data or [])
+            self._reddit_cached_ids = {r['content_id'] for r in rows}
+            if self._reddit_cached_ids:
+                print(f"   📦 Reddit cache: {len(self._reddit_cached_ids)} titles already have fresh reviews — will skip")
+        except Exception as e:
+            self._reddit_cached_ids = set()
+            print(f"   ⚡️ Reddit cache load failed: {e}")
+
+    @classmethod
+    def _get_oauth_token(cls) -> Optional[str]:
+        """
+        Fetch a Reddit OAuth2 token using client_credentials grant.
+        Result is cached at the class level so it's fetched once per run,
+        not once per title. Token is valid for 24h (86400s).
+        """
+        # Return cached token if still valid (with 60s buffer)
+        if cls._oauth_token and time.time() < cls._token_expires_at - 60:
+            return cls._oauth_token
+
+        client_id     = os.getenv('REDDIT_CLIENT_ID')
+        client_secret = os.getenv('REDDIT_CLIENT_SECRET')
+        username      = os.getenv('REDDIT_USERNAME', '')
+        password      = os.getenv('REDDIT_PASSWORD', '')
+
+        if not client_id or not client_secret:
+            return None
+
+        ua = 'python:streamiq.scraper:v3.0 (by /u/stream_tracker_bot)'
+        payload = (
+            {'grant_type': 'password', 'username': username, 'password': password}
+            if username and password
+            else {'grant_type': 'client_credentials'}
+        )
+        try:
+            r = requests.post(
+                cls._TOKEN_URL,
+                data=payload,
+                auth=(client_id, client_secret),
+                headers={'User-Agent': ua},
+                timeout=10,
+            )
+            if r.status_code == 200 and 'access_token' in r.json():
+                data = r.json()
+                cls._oauth_token      = data['access_token']
+                cls._token_expires_at = time.time() + data.get('expires_in', 86400)
+                return cls._oauth_token
+            else:
+                print(f"   ⚠️  Reddit token fetch failed: HTTP {r.status_code} — {r.text[:100]}")
+        except Exception as e:
+            print(f"   ⚠️  Reddit token fetch error: {e}")
+        return None
+
+    def _api_url(self, path: str) -> str:
+        """
+        Return the correct base URL.
+        oauth.reddit.com MUST be used when an Authorization header is present —
+        sending a Bearer token to www.reddit.com returns 403.
+        Falls back to www.reddit.com if not authenticated.
+        """
+        if RedditIngester._oauth_token:
+            return f"{self._OAUTH_BASE}{path}"
+        return f"https://www.reddit.com{path}"
+
+    def _throttle(self):
+        """
+        Authenticated apps get ~1 req/sec sustained (600 req/10min).
+        0.15s gap is safe; we use 0.2s to be polite.
+        Unauthenticated fallback keeps the original 1.5s gap.
+        """
+        gap_needed = 0.1 if RedditIngester._oauth_token else 1.5
+        with RedditIngester._rate_lock:
+            gap = time.time() - RedditIngester._last_call_time
+            if gap < gap_needed:
+                time.sleep(gap_needed - gap)
+            RedditIngester._last_call_time = time.time()
+
+    def _get_show_subreddit(self, title: str) -> Optional[str]:
+        """
+        Try to find a show-specific subreddit by checking r/<slug>/about.json.
+        Uses public www.reddit.com (not oauth) — about.json is publicly readable
+        and oauth.reddit.com can return 0 subscribers for valid subs under
+        client_credentials grant.
+        Results cached so each title is only looked up once per run.
+        """
+        if not hasattr(self, '_sub_cache'):
+            self._sub_cache = {}
+        if title in self._sub_cache:
+            return self._sub_cache[title]
+
+        clean        = re.sub(r"['\-:,\.!?&]", '', title)
+        slug_nospace = re.sub(r'\s+', '', clean)       # StrangerThings
+        slug_under   = re.sub(r'\s+', '_', clean)      # Stranger_Things
+
+        # Try both slug variants — always use public URL, never oauth for this check
+        for slug in dict.fromkeys([slug_nospace, slug_under]):
+            try:
+                r = self._session.get(
+                    f"https://www.reddit.com/r/{slug}/about.json",
+                    timeout=4,
+                )
+                if r.status_code == 200:
+                    subs = r.json().get('data', {}).get('subscribers', 0)
+                    if subs > 500:   # lowered from 1000 — valid small show subs exist
+                        self._sub_cache[title] = slug
+                        return slug
+            except Exception:
+                pass
+
+        self._sub_cache[title] = None
+        return None
+
+    def _get_subreddits(self, title: str, media_type: str, is_hindi: bool,
+                        check_show_sub: bool = True) -> List[str]:
         """Return ordered list of subreddits to search, best signal first."""
         title_lower = title.lower()
         # Anime detection — check for common anime title patterns
@@ -1410,81 +1578,154 @@ class RedditIngester:
                           'frieren', 'spy x', 'vinland', 'bleach', 'hunter x']
         is_anime = any(k in title_lower for k in anime_keywords)
 
+        # Try to find a show-specific subreddit first (best signal)
+        # Skipped when check_show_sub=False (quota-blown fast path) — saves 2 API calls
+        if media_type == 'tv' and check_show_sub:
+            print(f"     🔎 Checking for r/{re.sub(r'[^a-zA-Z0-9]', '', title)} subreddit...", end=' ', flush=True)
+            show_sub = self._get_show_subreddit(title)
+            print("found ✅" if show_sub else "not found")
+        else:
+            show_sub = None
+
         if is_anime:
-            return ['anime', 'Animesuggest', 'television', 'movies']
-        if is_hindi:
-            return ['bollywood', 'india', 'HindiMovies',
+            base = ['anime', 'Animesuggest', 'television', 'movies']
+        elif is_hindi:
+            base = ['bollywood', 'india', 'HindiMovies',
                     'television' if media_type == 'tv' else 'movies']
-        if media_type == 'tv':
-            return ['television', 'NetflixBestOf', 'PrimeVideo', 'TrueFilm']
-        return ['movies', 'TrueFilm', 'worldcinema', 'MovieSuggestions']
+        elif media_type == 'tv':
+            base = ['television', 'NetflixBestOf', 'PrimeVideo', 'Jiohotstar',
+                    'TrueFilm', 'binge']
+        else:
+            base = ['movies', 'TrueFilm', 'worldcinema', 'MovieSuggestions',
+                    'NetflixBestOf', 'PrimeVideo']
+
+        # Prepend show-specific sub if found — it has the richest discussion
+        if show_sub and show_sub not in base:
+            return [show_sub] + base
+        return base
 
     def _get_queries(self, title: str) -> List[str]:
-        """Multiple queries — fallback ensures we find something even for short/generic titles."""
-        return [
-            f"{title} review",
-            f"{title} discussion",
-            f'"{title}"',   # exact match catches threads that just mention the title
-        ]
+        """Multiple queries — fallback ensures we find something even for short/generic titles.
+        Normalise ALLCAPS titles (e.g. JUJUTSU KAISEN → Jujutsu Kaisen) so Reddit search
+        actually matches threads, since Reddit threads use normal capitalisation.
+        """
+        # Normalise: ALLCAPS → Title Case, leave mixed-case as-is
+        title_norm = title.title() if title.isupper() else title
+        queries = [f"{title_norm} review", f"{title_norm} discussion"]
+        # Add exact-match only if title is short enough to be unambiguous
+        if len(title_norm) > 4:
+            queries.append(f'"{title_norm}"')
+        # Also try original title as final fallback if normalised is different
+        if title_norm != title:
+            queries.append(title)
+        return queries
 
     def _search_subreddit(self, subreddit: str, query: str, limit: int = 5) -> List[Dict]:
-        """Search a subreddit via Reddit JSON API."""
-        url = f"https://www.reddit.com/r/{subreddit}/search.json"
-        params = {'q': query, 'restrict_sr': 'on', 'sort': 'relevance',
-                  't': 'all', 'limit': limit}   # t=all not t=year — older threads still relevant
+        """
+        Search a subreddit. Tries JSON API first (richer, more reliable),
+        falls back to RSS if JSON search is blocked or returns nothing.
+        """
+        self._throttle()
+
+        def _parse_posts(results):
+            posts = []
+            for item in results[:limit]:
+                d = item.get('data', {})
+                link = d.get('url', '') or d.get('permalink', '')
+                # permalink from JSON is already relative: /r/sub/comments/id/slug/
+                permalink = d.get('permalink', '')
+                if '/comments/' not in permalink:
+                    continue
+                thread_id = permalink.split('/comments/')[1].split('/')[0]
+                posts.append({'data': {
+                    'id':        thread_id,
+                    'title':     d.get('title', ''),
+                    'permalink': permalink,
+                    'score':     d.get('score', 0),
+                }})
+            return posts
+
+        # ── Primary: JSON search ──────────────────────────────────────────
+        url = self._api_url(f"/r/{subreddit}/search.json")
+        params = {'q': query, 'restrict_sr': 'on', 'sort': 'relevance', 't': 'all', 'limit': limit}
         for attempt in range(2):
             try:
-                resp = self._session.get(url, params=params, timeout=10)
-                if resp.status_code == 200:
-                    return resp.json().get('data', {}).get('children', [])
+                resp = self._session.get(url, params=params, timeout=self._TIMEOUT)
                 if resp.status_code == 429:
-                    time.sleep(3 * (attempt + 1))
+                    time.sleep(4)
                     continue
-                if resp.status_code in (403, 404):
+                if resp.status_code != 200:
+                    # Visible error — tells us if we're getting 403 (blocked) vs empty
+                    print(f" [HTTP {resp.status_code}]", end="")
                     return []
+                posts = []
+                for child in resp.json().get('data', {}).get('children', [])[:limit]:
+                    p = child.get('data', {})
+                    if p.get('id') and p.get('permalink'):
+                        posts.append({'data': {
+                            'id':        p['id'],
+                            'title':     p.get('title', ''),
+                            'permalink': p.get('permalink', ''),
+                            'score':     p.get('score', 0),
+                        }})
+                return posts
             except Exception:
                 time.sleep(1)
         return []
 
     def _extract_comments(self, thread_id: str) -> List[Dict]:
-        """Fetch top comments (depth=1) for speed."""
-        url = f"https://www.reddit.com/comments/{thread_id}.json"
+        """Fetch top comments for a thread via JSON API."""
+        self._throttle()
+        url = self._api_url(f"/comments/{thread_id}.json")
         params = {'limit': 10, 'depth': 1, 'sort': 'top'}
         for attempt in range(2):
             try:
-                resp = self._session.get(url, params=params, timeout=8)
+                resp = self._session.get(url, params=params, timeout=self._TIMEOUT)
                 if resp.status_code == 429:
-                    time.sleep(3 * (attempt + 1))
+                    time.sleep(4)
                     continue
-                if resp.status_code != 200 or len(resp.json()) < 2:
-                    return []
-                comments_raw = resp.json()[1].get('data', {}).get('children', [])
-                extracted = []
-                for comment in comments_raw[:8]:
-                    c_data = comment.get('data', {})
-                    body = c_data.get('body', '')
-                    if (body and body not in ('[deleted]', '[removed]')
-                            and len(body) > 30
-                            and not any(p in body.lower() for p in self.noise_phrases)):
-                        sent = self.sentiment.analyze(body)
-                        extracted.append({
-                            'text': body,
-                            'sentiment': sent['sentiment'],
-                            'confidence': sent['confidence'],
-                            'score': c_data.get('score', 0)
-                        })
-                return extracted
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if len(data) >= 2:
+                        return self._parse_comment_json(data[1])
+                break
             except Exception:
                 time.sleep(1)
         return []
 
+    def _parse_comment_json(self, comments_data: dict) -> List[Dict]:
+        """Parse comments from Reddit JSON response."""
+        extracted = []
+        for comment in comments_data.get('data', {}).get('children', [])[:8]:
+            c_data = comment.get('data', {})
+            body = c_data.get('body', '')
+            if (body and body not in ('[deleted]', '[removed]')
+                    and len(body) > 30
+                    and not any(p in body.lower() for p in self.noise_phrases)):
+                sent = self.sentiment.analyze(body)
+                extracted.append({
+                    'text': body,
+                    'sentiment': sent['sentiment'],
+                    'confidence': sent['confidence'],
+                    'score': c_data.get('score', 0)
+                })
+        return extracted
+
     def get_reddit_discussions(self, title: str, media_type: str,
-                               is_hindi: bool = False) -> List[Dict]:
+                               is_hindi: bool = False,
+                               max_subs: int = 3,
+                               content_id: Optional[int] = None) -> List[Dict]:
         """
-        Search up to 2 subreddits with up to 3 query fallbacks.
+        Search up to max_subs subreddits with up to 3 query fallbacks.
         Stops as soon as 4 threads with comments are found.
+        Falls back to an all-of-reddit search if subreddit searches yield nothing.
         """
-        subreddits = self._get_subreddits(title, media_type, is_hindi)[:2]
+        # Cache hit — skip entirely if we already saved fresh reviews for this title
+        if content_id and content_id in getattr(self, '_reddit_cached_ids', set()):
+            print(f"     📦 Reddit cached — skipping search")
+            return []
+        subreddits = self._get_subreddits(title, media_type, is_hindi,
+                                          check_show_sub=(max_subs >= 3))[:max_subs]
         queries = self._get_queries(title)
 
         seen_ids = set()
@@ -1499,7 +1740,9 @@ class RedditIngester:
             for query in queries:
                 if len(all_threads) >= 4:
                     break
-                posts = self._search_subreddit(subreddit, query, limit=3)
+                posts = self._search_subreddit(subreddit, query, limit=5)
+                if not posts:
+                    continue  # try next query fallback only if this one returned nothing
                 for post in posts:
                     if len(all_threads) >= 4:
                         break
@@ -1525,14 +1768,57 @@ class RedditIngester:
                             'upvotes': post_data.get('score', 0)
                         })
                         sub_found += 1
-
-                time.sleep(0.3)
+                if sub_found:
+                    break  # got threads from this subreddit — no need to try more queries
 
             print(f"{sub_found} threads" if sub_found else "none")
 
+        # ── All-of-Reddit fallback when subreddit searches return nothing ──
+        if not all_threads:
+            title_norm = title.title() if title.isupper() else title
+            fallback_query = f"{title_norm} review"
+            print(f"     🔍 Fallback: all-of-Reddit search for '{fallback_query}'...", end=' ', flush=True)
+            self._throttle()
+            try:
+                url = self._api_url("/search.json")
+                resp = self._session.get(url, params={
+                    'q': fallback_query, 'sort': 'relevance', 't': 'year', 'limit': 5
+                }, timeout=self._TIMEOUT)
+                if resp.status_code == 200:
+                    results = resp.json().get('data', {}).get('children', [])
+                    fallback_found = 0
+                    for item in results:
+                        if len(all_threads) >= 4:
+                            break
+                        d = item.get('data', {})
+                        permalink = d.get('permalink', '')
+                        if '/comments/' not in permalink:
+                            continue
+                        thread_id = permalink.split('/comments/')[1].split('/')[0]
+                        if thread_id in seen_ids:
+                            continue
+                        thread_title = d.get('title', '')
+                        skip_keywords = ['trailer', 'ama', 'casting', 'renewed', 'cancelled', 'official']
+                        if any(k in thread_title.lower() for k in skip_keywords):
+                            continue
+                        seen_ids.add(thread_id)
+                        comments = self._extract_comments(thread_id)
+                        if comments:
+                            all_threads.append({
+                                'title': thread_title,
+                                'url': f"https://www.reddit.com{permalink}",
+                                'subreddit': d.get('subreddit', 'reddit'),
+                                'comments': comments,
+                                'upvotes': d.get('score', 0)
+                            })
+                            fallback_found += 1
+                    print(f"{fallback_found} threads" if fallback_found else "none")
+            except Exception as e:
+                print(f"error: {e}")
+
         total_comments = sum(len(t['comments']) for t in all_threads)
         if all_threads:
-            print(f"     ✅ {len(all_threads)} threads, {total_comments} comments across {len(subreddits)} subreddits")
+            print(f"     ✅ {len(all_threads)} threads, {total_comments} comments across subreddits")
         else:
             print(f"     ⚡️ No Reddit discussions found")
         return all_threads
@@ -2988,28 +3274,44 @@ class AsyncWatchNowPipeline:
     # ── aiohttp helpers ───────────────────────────────────────────────────
 
     async def _aget(self, url: str, params: dict, retries: int = 3,
-                    label: str = "") -> Optional[dict]:
+                    label: str = "", return_status: bool = False) -> Optional[dict]:
+        """
+        Async GET helper.
+        If return_status=True, returns (data_or_None, http_status_int) tuple.
+        status=0 means a network/exception failure (not an HTTP error).
+        """
+        last_status = 0
         for attempt in range(retries):
             try:
                 async with self._session.get(url, params=params, timeout=12) as r:
+                    last_status = r.status
                     if r.status == 200:
-                        return await r.json()
+                        data = await r.json()
+                        return (data, 200) if return_status else data
                     if r.status == 429:
                         wait = 2 ** attempt
                         print(f"   ⚡️ Rate-limited {label or url.split('/')[-1]} — waiting {wait}s")
                         await asyncio.sleep(wait)
                         continue
-                    if r.status in (400, 403, 404):
-                        return None
+                    if r.status == 403:
+                        # Only log if quota not already blown — avoids spam when
+                        # multiple concurrent titles all hit 403 simultaneously
+                        if label and not getattr(self, '_yt_quota_blown', False):
+                            print(f"   🚫 HTTP 403 for {label} — API key invalid or quota exhausted")
+                        return (None, 403) if return_status else None
+                    if r.status in (400, 404):
+                        return (None, r.status) if return_status else None
+                    # Other non-200: log on last attempt
                     if attempt == retries - 1:
                         print(f"   ⚡️ HTTP {r.status} for {label or url.split('/')[-1]}")
-                    return None
+                    return (None, r.status) if return_status else None
             except Exception as e:
+                last_status = 0
                 if attempt == retries - 1:
                     print(f"   ⚡️ {label or 'request'} failed: {type(e).__name__}: {e}")
             if attempt < retries - 1:
                 await asyncio.sleep(0.75 * (attempt + 1))
-        return None
+        return (None, last_status) if return_status else None
 
     # ── Provider prefetch — all titles simultaneously ─────────────────────
 
@@ -3067,37 +3369,65 @@ class AsyncWatchNowPipeline:
             print(f"   ⚡️ YouTube cache load failed: {e}")
 
     async def _yt_search(self, query: str) -> List[dict]:
-        """Search YouTube — returns [] immediately if daily quota is blown."""
+        """
+        Search YouTube — returns [] immediately if quota is blown or key is invalid.
+        Uses return_status=True on _aget to distinguish 403 (key/quota dead) from
+        transient network errors. Caps to 3 concurrent searches via semaphore.
+        """
         if self._yt_quota_blown:
             return []
 
-        # Check if we'd exceed today's budget
         if self._yt_quota_used + self.YT_SEARCH_COST > self.YT_DAILY_QUOTA:
             if not self._yt_quota_blown:
-                print(f"   ⚠️  YouTube quota budget reached ({self._yt_quota_used} units used) — skipping remaining YT calls")
+                print(f"   ⚠️  YouTube quota budget reached ({self._yt_quota_used} units used) — disabling YouTube for this run")
                 self._yt_quota_blown = True
             return []
 
-        data = await self._aget(
-            "https://www.googleapis.com/youtube/v3/search",
-            {'part': 'snippet', 'q': query, 'type': 'video',
-             'maxResults': 2, 'key': self.yt_key, 'order': 'relevance'},
-            label="YouTube search"
-        )
-        if not data:
-            # Check if this looks like a quota 403 (already logged by _aget)
-            # Mark quota as blown so we stop hammering the API
-            self._yt_quota_blown = True
-            print(f"   ⚠️  YouTube search failed — quota likely exhausted. Skipping YT for remaining titles.")
+        if not hasattr(self, '_yt_search_sem'):
+            self._yt_search_sem = asyncio.Semaphore(3)
+
+        async with self._yt_search_sem:
+            data, status = await self._aget(
+                "https://www.googleapis.com/youtube/v3/search",
+                {'part': 'snippet', 'q': query, 'type': 'video',
+                 'maxResults': 3, 'key': self.yt_key, 'order': 'relevance'},
+                label="YouTube search",
+                return_status=True
+            )
+
+        if data is None:
+            if status == 403:
+                # Key invalid or quota exhausted — print ONCE then silence all future messages
+                if not self._yt_quota_blown:
+                    self._yt_quota_blown = True
+                    print(
+                        f"   🚫 YouTube API returned 403 — key invalid or daily quota exhausted.\n"
+                        f"      Check quota at: console.cloud.google.com/apis/api/youtube.googleapis.com/quotas\n"
+                        f"      Disabling YouTube for this run — TMDb + Reddit reviews still collected."
+                    )
+                # else: already blown and already printed — stay silent
+            elif status == 0:
+                # Pure network failure (exception) — track consecutive failures
+                self._yt_fail_count = getattr(self, '_yt_fail_count', 0) + 1
+                if self._yt_fail_count >= 3:
+                    self._yt_quota_blown = True
+                    print(f"   🚫 YouTube: {self._yt_fail_count} consecutive network failures — disabling for this run.")
+                else:
+                    print(f"   ⚡️ YouTube network error ({self._yt_fail_count}/3) — query: '{query}'")
+            else:
+                print(f"   ⚡️ YouTube HTTP {status} — query: '{query}'")
             return []
 
+        # Success — reset failure counter and track quota spend
+        self._yt_fail_count = 0
         self._yt_quota_used += self.YT_SEARCH_COST
         return [{'video_id': i['id']['videoId'],
                  'title': i['snippet']['title'],
                  'description': i['snippet']['description'],
                  'channel': i['snippet']['channelTitle'],
                  'channel_id': i['snippet']['channelId']}
-                for i in data.get('items', [])]
+                for i in data.get('items', [])
+                if i.get('id', {}).get('videoId')]
 
     async def _yt_stats_one(self, video_id: str, channel_id: str) -> dict:
         vdata, cdata = await asyncio.gather(
@@ -3117,27 +3447,68 @@ class AsyncWatchNowPipeline:
             s['subscribers'] = int(st.get('subscriberCount', 0))
         return s
 
-    async def _process_youtube(self, content_id: int, title: str,
+    async def _process_youtube(self, content_id: int, tmdb_id: int, title: str,
                                 platform: str, is_hindi: bool) -> List[dict]:
         """Returns list of review rows — caller does the bulk upsert.
         Checks DB cache first to avoid burning quota on already-seen titles.
         Sentiment uses VADER (instant, no network) for title+description texts.
         """
-        # Cache hit — content already has YouTube reviews from today
+        # ── In-run YouTube dedup — keyed by tmdb_id, not (tmdb_id, platform) ──
+        # The same title can appear on multiple platforms (e.g. JUJUTSU KAISEN on
+        # Netflix AND Jiohotstar). All platforms share the same content_id (upsert
+        # on tmdb_id), so we only need ONE YouTube search per unique title per run.
+        if not hasattr(self, '_yt_searched_tmdb'):
+            self._yt_searched_tmdb = set()
+        if tmdb_id in self._yt_searched_tmdb:
+            print(f"   📦 YouTube already searched this run — skipping duplicate (saves 100 quota units)")
+            return []
+
+        # Cache hit — content already has YouTube reviews from a previous run today
         if content_id in getattr(self, '_yt_cache_by_content', {}):
             cached = self._yt_cache_by_content[content_id]
             print(f"   📦 YouTube cached ({len(cached)} reviews) — 0 quota used")
-            return []   # rows already in DB; no need to re-save
-
-        if self._yt_quota_blown:
-            print(f"   ⚡️ YouTube quota exhausted — skipping, saving TMDb/Reddit only")
+            self._yt_searched_tmdb.add(tmdb_id)
             return []
 
-        query = f"{title} Hindi review {platform}" if is_hindi else f"{title} {platform} review"
-        print(f"   🔍 Searching: {query}")
-        videos = await self._yt_search(query)
+        if self._yt_quota_blown:
+            return []  # already announced once — no need to repeat per title
+
+        # Normalise title to Title Case for better YouTube matching
+        # e.g. "JUJUTSU KAISEN" → "Jujutsu Kaisen" matches more video titles
+        title_normalised = title.title() if title.isupper() else title
+
+        # Progressive query fallbacks — broad to specific so we always find something
+        # Avoids: "Dhurandhar Hindi review Netflix" finding nothing because the video
+        # is titled "Dhurandhar Review | Netflix" without the exact word order.
+        if is_hindi:
+            queries = [
+                f"{title_normalised} Hindi review {platform}",
+                f"{title_normalised} review Hindi",
+                f"{title_normalised} movie review",
+                f"{title_normalised} review",
+            ]
+        else:
+            queries = [
+                f"{title_normalised} {platform} review",
+                f"{title_normalised} review",
+                f"{title_normalised} series review" if "season" in title_normalised.lower() else f"{title_normalised} film review",
+            ]
+
+        videos = []
+        used_query = None
+        for q in queries:
+            if self._yt_quota_blown:
+                break
+            print(f"   🔍 Searching: {q}")
+            videos = await self._yt_search(q)
+            if videos:
+                used_query = q
+                break  # found results — stop trying fallbacks
+            # Small delay between fallback attempts to avoid burst
+            await asyncio.sleep(0.3)
+
         if not videos:
-            print(f"   ⚡️ YouTube: no results for '{query}'")
+            # _yt_search already printed the failure reason — no need for another message
             return []
 
         # Fetch stats for all videos simultaneously
@@ -3166,6 +3537,8 @@ class AsyncWatchNowPipeline:
                 'youtube_weight': yw,
                 'weighted_sentiment': sent['sentiment'] * sent['confidence'] * yw
             })
+        # Register so sibling platforms skip YouTube for this title this run
+        self._yt_searched_tmdb.add(tmdb_id)
         return rows
 
     # ── TMDb reviews — parallel sentiment ────────────────────────────────
@@ -3212,7 +3585,13 @@ class AsyncWatchNowPipeline:
                      media_type: str, is_hindi: bool) -> List[dict]:
         if not self.reddit:
             return []
-        threads = self.reddit.get_reddit_discussions(title, media_type, is_hindi=is_hindi)
+        # If YouTube quota is already blown this run, Reddit is the primary source
+        # so we still run it — but cap at 2 subreddits max to keep it snappy.
+        max_subs = 2 if getattr(self, '_yt_quota_blown', False) else 3
+        threads = self.reddit.get_reddit_discussions(
+            title, media_type, is_hindi=is_hindi, max_subs=max_subs,
+            content_id=content_id
+        )
         if not threads:
             return []
         rows = []
@@ -3313,7 +3692,7 @@ class AsyncWatchNowPipeline:
 
             # All sources + runtime/trailer details fire simultaneously
             yt_rows, tmdb_rows, reddit_rows, critic_rows, details = await asyncio.gather(
-                self._process_youtube(content_id, title, platform, is_hindi),
+                self._process_youtube(content_id, tmdb_id, title, platform, is_hindi),
                 self._process_tmdb_reviews(content_id, tmdb_id, media_type),
                 asyncio.get_running_loop().run_in_executor(self._executor, self._reddit_sync,
                                      content_id, title, media_type, is_hindi),
@@ -3515,7 +3894,7 @@ class JustWatchFetcher:
         'jhs': 'Jiohotstar',   # confirmed live
         'dnp': 'Jiohotstar',   # legacy
         'hot': 'Jiohotstar',   # legacy
-        'jio': 'JioCinema',
+        'jio': 'Jiohotstar',   # JioCinema merged into Jiohotstar
         'atp': 'Apple TV+',
     }
 
@@ -3666,9 +4045,9 @@ class JustWatchFetcher:
                 done += 1
                 item, url, leaving_date = future.result()
                 title = item['title']
+                if done % 50 == 0:
+                    print(f"   ⏳ {done}/{len(rows)} processed...")
                 if not url:
-                    if done % 50 == 0:
-                        print(f"   ⏳ {done}/{len(rows)} processed...")
                     continue
                 try:
                     update_payload = {'stream_url': url}
@@ -3718,125 +4097,58 @@ class JustWatchFetcher:
             if len(page.data) < 1000:
                 break
 
-        class _R:
-            data = all_data
-        rows = _R()
-
-        if not rows.data:
+        if not all_data:
             print("⚡️ No Discover content found")
             return
 
-        # Always re-fetch ALL rows on every run so leaving_date stays current.
-        # JustWatch updates validUntil daily — skipping rows means expiry dates
-        # go stale and "Last Chance" stays empty even when titles are about to leave.
-        rows_needing_update = rows.data
+        total = len(all_data)
+        today = datetime.now().date()
+        recheck_window_days = 14   # re-check titles leaving within 14 days
 
-        # Report how many already have stream URLs (for info only — we still re-check)
-        already_linked = sum(1 for r in rows.data if r.get('stream_url'))
-        if already_linked:
-            print(f"   🔄 Re-checking expiry dates for {already_linked} already-linked titles")
+        # ── Smart skip logic ─────────────────────────────────────────────────
+        # Only re-fetch a title if:
+        #   (a) it has no stream URL yet                → needs first-time fetch
+        #   (b) it has a leaving_date within 14 days   → expiry may have changed
+        #   (c) it has a leaving_date in the past      → may have been renewed
+        # Skip everything else — JustWatch data doesn't change hourly.
+        needs_check = []
+        skipped     = 0
+        for row in all_data:
+            if not row.get('stream_url'):
+                needs_check.append(row)   # (a) no URL yet
+                continue
+            ld = row.get('leaving_date')
+            if ld:
+                try:
+                    leave = datetime.strptime(ld, '%Y-%m-%d').date()
+                    days_left = (leave - today).days
+                    if days_left <= recheck_window_days:
+                        needs_check.append(row)   # (b)/(c) expiring soon or already gone
+                    else:
+                        skipped += 1
+                except ValueError:
+                    needs_check.append(row)   # malformed date — recheck to be safe
+            else:
+                skipped += 1   # has URL, no leaving_date → stable, skip
 
-        updated = self._fetch_and_update(rows_needing_update, 'discover_content')
-        print(f"\n✅ {updated}/{len(rows_needing_update)} Discover titles updated")
+        already_linked = sum(1 for r in all_data if r.get('stream_url'))
+        print(f"   📊 {total} total titles  |  {already_linked} already linked")
+        print(f"   ⏭️  {skipped} stable titles skipped (have URL, no expiry pressure)")
+        print(f"   🔄 {len(needs_check)} titles to check "
+              f"({total - already_linked} new  +  "
+              f"{len(needs_check) - (total - already_linked)} expiring soon)")
+
+        if not needs_check:
+            print("   ✅ Nothing to update — all titles stable")
+            return
+
+        updated = self._fetch_and_update(needs_check, 'discover_content')
+        print(f"\n✅ {updated}/{len(needs_check)} Discover titles updated")
+
 
 
 # ============================================================================
 # MAIN - RUN BOTH FLOWS
-# ============================================================================
-
-def _enrich_discover_details(force_trailers: bool = False):
-    """
-    Backfill runtime + trailer_id for Discover content rows that are missing them.
-    Pass force_trailers=True (or --force-trailers CLI flag) to re-fetch trailers
-    for every row, even those that already have one — useful after improving the
-    trailer lookup logic.
-    """
-    db   = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-    tmdb = TMDbResolver()
-
-    # Paginate to bypass Supabase 1000 row default limit
-    all_rows = []
-    for start in range(0, 50000, 1000):
-        page = db.table('discover_content').select(
-            'id, tmdb_id, title, release_year, content_type, trailer_id, runtime, episode_runtime'
-        ).range(start, start + 999).execute()
-        if not page.data:
-            break
-        all_rows.extend(page.data)
-        if len(page.data) < 1000:
-            break
-
-    to_do = []
-    for r in all_rows:
-        needs_trailer  = force_trailers or not r.get('trailer_id')
-        needs_runtime  = (r.get('content_type') == 'tv'    and not r.get('episode_runtime')) \
-                      or (r.get('content_type') == 'movie' and not r.get('runtime'))
-        if needs_trailer or needs_runtime:
-            to_do.append(r)
-    if force_trailers:
-        print(f"   🔄 --force-trailers: re-fetching trailers for all {len(to_do)} rows")
-
-    if not to_do:
-        print("   ⏭  All Discover rows already enriched.")
-        return
-
-    # ── Load manual trailer overrides ────────────────────────────────────────
-    overrides = {}
-    try:
-        ov_rows = db.table('trailer_overrides').select('tmdb_id, trailer_id').execute().data or []
-        overrides = {r['tmdb_id']: r['trailer_id'] for r in ov_rows}
-        if overrides:
-            print(f"   🎬 {len(overrides)} manual trailer override(s) loaded")
-    except Exception:
-        pass  # table may not exist yet — safe to skip
-
-    # Apply overrides immediately — no TMDb call needed for these
-    override_hits = [r for r in to_do if r['tmdb_id'] in overrides]
-    to_do         = [r for r in to_do if r['tmdb_id'] not in overrides]
-    for r in override_hits:
-        try:
-            db.table('discover_content').update(
-                {'trailer_id': overrides[r['tmdb_id']]}
-            ).eq('id', r['id']).execute()
-        except Exception:
-            pass
-    if override_hits:
-        print(f"   ✅ {len(override_hits)} title(s) trailer set from manual overrides")
-
-    print(f"   🚀 {len(to_do)} rows need runtime/trailer — 20 concurrent workers")
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed as _ac
-    from threading import Lock
-    lock    = Lock()
-    updated = 0
-    errors  = 0
-
-    def _enrich_one(row):
-        details = tmdb.get_runtime_and_trailer(
-            row['tmdb_id'], row['content_type'],
-            title=row.get('title'), year=row.get('release_year'),
-        )
-        yt_fallback = details.pop('_yt_fallback', False)
-        if any(v is not None for v in details.values()):
-            if yt_fallback:
-                print(f"   🔍 YT fallback: {row.get('title','?')[:45]}")
-            db.table('discover_content').update(details).eq('id', row['id']).execute()
-        return details
-
-    with ThreadPoolExecutor(max_workers=20) as ex:
-        futures = {ex.submit(_enrich_one, r): r for r in to_do}
-        for future in _ac(futures):
-            try:
-                future.result()
-                with lock:
-                    updated += 1
-            except Exception:
-                with lock:
-                    errors += 1
-
-    print(f"   ✅ Enriched {updated} rows  ⚠️  {errors} errors")
-
-
 def embed_new_discover():
     """
     Generate Gemini embeddings for any discover_content rows that don't have
@@ -3959,8 +4271,6 @@ def main():
                         help='Use Groq/Gemini sentiment (slower, marginal gain)')
     parser.add_argument('--discover-only', action='store_true',
                         help='Skip Watch Now flow — only run Discover + stream URL fetch')
-    parser.add_argument('--force-trailers', action='store_true',
-                        help='Re-fetch trailers for ALL Discover rows (ignores existing trailer_id)')
     args, _ = parser.parse_known_args()
 
     if args.no_reddit:
@@ -4021,10 +4331,6 @@ def main():
     discover = DiscoverFlow()
     discover.save_discover_content()
 
-    # Enrich Discover rows with runtime + trailers concurrently
-    print("\n📐 Enriching Discover content with runtime + trailers...")
-    _enrich_discover_details(force_trailers=args.force_trailers)
-    
     # FLOW 2: WATCH NOW (With reviews & scoring — async pipeline)
     if args.discover_only:
         print("\n⏭️  Skipping Watch Now flow (--discover-only)")
@@ -4051,7 +4357,6 @@ def main():
     print("\n📊 Summary:")
     print("   ✅ Discover content saved (with stream URLs)")
     print("   ✅ Watch Now content scored (with reviews + stream URLs)")
-    print("\nNext: streamlit run dashboard_v3.py")
 
 if __name__ == "__main__":
     main()
