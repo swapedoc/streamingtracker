@@ -127,7 +127,7 @@ cp .env.example .env
 # Fill in your API keys in .env
 
 # Run the main pipeline (Watch Now + Discover)
-python streaming_tracker_v3.py
+python streaming_tracker.py
 
 # Run discover only (skips Watch Now, no YouTube quota used)
 python streaming_tracker_v3.py --discover-only

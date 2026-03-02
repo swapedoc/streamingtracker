@@ -15,7 +15,6 @@ REQUIRED .env:
   SUPABASE_URL=https://xxxx.supabase.co
   SUPABASE_KEY=<service_role_key>          # NOT the anon key — needs UPDATE access
   TELEGRAM_BOT_TOKEN=<bot_token>
-  TELEGRAM_BOT_TOKEN=<bot_token>   # one bot for all users
   # No global TELEGRAM_CHAT_ID needed — each user provides their own
 
 HOW IT WORKS:
