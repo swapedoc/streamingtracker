@@ -131,12 +131,17 @@ def _validate_offers_response(data: dict) -> list:
         raise SchemaError(f"'node' is {type(node).__name__}, expected dict or null")
 
     offers = node.get('offers')
+    # FIX #14: offers=None is a completely normal JustWatch response — it means
+    # the title has no streaming offers in that region. The old code raised a
+    # SchemaError for this case, which triggered a spurious Telegram schema-change
+    # alert and logged a warning, making it impossible to distinguish real schema
+    # breakage from ordinary "not available" responses.
+    # Only raise SchemaError when the field is present but is the wrong type
+    # (e.g. a dict or string instead of a list), which is a genuine schema change.
     if offers is None:
-        raise SchemaError(
-            f"'offers' missing from node — available keys: {list(node.keys())}"
-        )
+        return []   # normal: title exists on JustWatch but has no streaming offers
     if not isinstance(offers, list):
-        raise SchemaError(f"'offers' is {type(offers).__name__}, expected list")
+        raise SchemaError(f"'offers' is {type(offers).__name__}, expected list or null")
 
     return offers
 

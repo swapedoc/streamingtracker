@@ -232,10 +232,15 @@ def send_user_alerts(hits: list[dict]) -> tuple[int, int]:
         lines = ['🎬 <b>StreamIQ — Available to Stream Now!</b>\n']
         for h in user_hits:
             emoji = '🎥' if h['content_type'] != 'tv' else '📺'
+            # FIX NEW-14: only include the URL line when a stream_url is actually
+            # present. When JustWatch returns no standardWebURL the old code
+            # rendered an empty line in the Telegram message — no clickable link,
+            # just blank whitespace below the platform name.
+            url_line = f'   {h["stream_url"]}\n' if h.get('stream_url') else ''
             lines.append(
                 f'{emoji} <b>{h["title"]}</b>\n'
                 f'   ▶ Now on <b>{h["platform"]}</b>\n'
-                f'   {h["stream_url"]}\n'
+                + url_line
             )
         lines.append('\n<i>Manage your watchlist on StreamIQ</i>')
         ok = send_telegram(chat_id, '\n'.join(lines))
@@ -282,22 +287,49 @@ def main():
     )
     rows_with_platform = result2.data or []
 
-    # Mark rows that already have a platform as notified immediately
-    # (user tracked something that was already streaming — no need to re-alert)
+    # FIX WA1: rows_with_platform had a platform set but notified=False.
+    # These are titles the user tracked directly from Watch Now — they are
+    # already streaming, so we know the platform/url immediately.
+    # BUG: the old code silently marked them notified=True with NO Telegram
+    # alert. Users who tracked from Watch Now never received any notification.
+    # FIX: queue them into watch_now_hits first, send alerts, THEN mark notified.
+    watch_now_hits = []
     if rows_with_platform:
+        print(f'  📺 {len(rows_with_platform)} Watch Now item(s) tracked — alerting users now...')
+        for r in rows_with_platform:
+            if r.get('platform') and r.get('telegram_chat_id'):
+                watch_now_hits.append({
+                    'title':            r['title'],
+                    'content_type':     r.get('content_type', 'movie'),
+                    'platform':         r['platform'],
+                    'stream_url':       r.get('stream_url') or '',
+                    'telegram_chat_id': r['telegram_chat_id'],
+                })
+        if watch_now_hits:
+            sent_wn, failed_wn = send_user_alerts(watch_now_hits)
+            print(f'  ✅ Watch Now alerts: sent to {sent_wn} user(s)' +
+                  (f', ❌ {failed_wn} failed' if failed_wn else ''))
+        else:
+            print(f'  ℹ️  {len(rows_with_platform)} Watch Now item(s) had no telegram_chat_id — skipped')
+        # Mark all notified after alerts are sent (or if no chat_id to notify)
         ids = [r['id'] for r in rows_with_platform]
         db.table('watchlist').update({'notified': True}).in_('id', ids).execute()
-        print(f'  ✅ Marked {len(ids)} already-streaming items as notified (no alert needed)')
+        print(f'  ✅ Marked {len(ids)} Watch Now items as notified')
 
     if not rows:
         print('  ✨ No pending Discover items to check.')
         print('\n' + '='*60)
         return
 
-    # Deduplicate by title (multiple users may track the same title)
-    unique: dict[str, list] = {}
+    # FIX WA2: deduplicate by (title, content_type) not just title.
+    # Keying by title alone meant that if User A tracked "Flesh and Blood" as
+    # a movie and User B tracked it as a TV show, only ONE JustWatch query
+    # fired — using User A's content_type. User B got the wrong result or missed
+    # the alert entirely. Tuple key fixes the lookup for both users independently.
+    unique: dict[tuple, list] = {}
     for r in rows:
-        unique.setdefault(r['title'], []).append(r)
+        key = (r['title'], r.get('content_type') or 'movie')
+        unique.setdefault(key, []).append(r)
 
     print(f'  📋 {len(rows)} rows ({len(unique)} unique titles) to check against JustWatch\n')
 
@@ -306,19 +338,19 @@ def main():
     errors  = []   # API failures
 
     def check_one(title_rows):
-        title, row_list = title_rows
-        ct = row_list[0].get('content_type', 'movie')
+        # FIX WA2: key is now (title, content_type) tuple — unpack both parts
+        (title, ct), row_list = title_rows
         try:
             plat, url = check_streaming(title, ct)
-            return title, row_list, plat, url, None
+            return title, ct, row_list, plat, url, None
         except Exception as e:
-            return title, row_list, None, None, str(e)
+            return title, ct, row_list, None, None, str(e)
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(check_one, item): item for item in unique.items()}
         done = 0
         for future in as_completed(futures):
-            title, row_list, plat, url, err = future.result()
+            title, ct, row_list, plat, url, err = future.result()
             done += 1
             pct = done / len(unique) * 100
             print(f'  [{done:3d}/{len(unique)}] ({pct:3.0f}%) {title[:50]}', end=' ')

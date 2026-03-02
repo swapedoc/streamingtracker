@@ -36,7 +36,16 @@ def build_text(row: dict) -> str:
 
 def embed_batch(texts: list[str], retries=5) -> list[list[float]] | None:
     """Send up to 100 texts in one batchEmbedContents request."""
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:batchEmbedContents?key={GEMINI_KEY}'
+    # FIX GE1 / EF9: pass the API key as the x-goog-api-key request header,
+    # not as a ?key= URL query param. URL params appear in GitHub Actions logs,
+    # server access logs, and any HTTP proxy/debug traces — anyone with log
+    # access could extract and abuse the key. The Gemini API accepts the key
+    # either way; the header form never appears in logs.
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:batchEmbedContents'
+    headers = {
+        'Content-Type':   'application/json',
+        'x-goog-api-key': GEMINI_KEY,
+    }
     body = {
         'requests': [
             {'model': f'models/{MODEL}', 'content': {'parts': [{'text': t}]}}
@@ -45,7 +54,7 @@ def embed_batch(texts: list[str], retries=5) -> list[list[float]] | None:
     }
     for attempt in range(retries):
         try:
-            r = requests.post(url, json=body, timeout=60)
+            r = requests.post(url, json=body, headers=headers, timeout=60)
             if r.status_code == 429:
                 wait = min(60, 5 * (attempt + 1))
                 print(f'\n  ⏳ Rate limited — waiting {wait}s...')
@@ -126,13 +135,20 @@ def run_incremental(db) -> tuple[int, int]:
             print(f'   ❌ Batch {bidx + 1}/{len(batches)} failed — {len(batch)} titles skipped')
             continue
 
-        for row, emb in zip(batch, embeddings):
-            try:
-                db.table('discover_content').update({'embedding': emb}).eq('id', row['id']).execute()
-                success += 1
-            except Exception as e:
-                errors += 1
-                print(f"   ⚠️  DB save failed '{row.get('title', '?')}': {e}")
+        # FIX NEW-13: replace per-row UPDATE calls with a single batch upsert.
+        # The old code did one Supabase HTTP round-trip per row — 3000+ calls
+        # for a full catalog run, adding 5+ minutes of pure DB write time and
+        # risking Supabase connection rate-limiting mid-run.
+        # upsert on conflict='id' updates only the embedding column and is
+        # equivalent to the old UPDATE ... WHERE id = ? for each row.
+        try:
+            updates = [{'id': row['id'], 'embedding': emb}
+                       for row, emb in zip(batch, embeddings)]
+            db.table('discover_content').upsert(updates, on_conflict='id').execute()
+            success += len(batch)
+        except Exception as e:
+            errors += len(batch)
+            print(f'   ⚠️  Batch {bidx + 1} DB upsert failed: {e}')
 
         print(f'   ✅ Batch {bidx + 1}/{len(batches)} done ({success} embedded so far)')
 
@@ -199,15 +215,19 @@ def main():
             sys.stdout.write(f'\r{" "*110}\r')
             print(f'  ❌ Batch {bidx+1} failed — {len(batch)} titles skipped')
         else:
-            # Save all embeddings in this batch to Supabase
+            # FIX NEW-13: batch upsert instead of per-row UPDATE calls.
+            # Same fix as run_incremental() — 1 DB call per 100-row batch
+            # instead of 100 individual calls. See run_incremental() for details.
             batch_errors = 0
-            for row, emb in zip(batch, embeddings):
-                try:
-                    db.table('discover_content').update({'embedding': emb}).eq('id', row['id']).execute()
-                    success += 1
-                except Exception as e:
-                    batch_errors += 1
-                    errors += 1
+            try:
+                updates = [{'id': row['id'], 'embedding': emb}
+                           for row, emb in zip(batch, embeddings)]
+                db.table('discover_content').upsert(updates, on_conflict='id').execute()
+                success += len(batch)
+            except Exception as e:
+                batch_errors = len(batch)
+                errors += len(batch)
+                print(f'\n  ⚠️  Batch {bidx+1} DB upsert failed: {e}')
             if batch_errors:
                 print(f'\n  ⚠️  {batch_errors} DB save errors in batch {bidx+1}')
 

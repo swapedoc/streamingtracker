@@ -2928,7 +2928,16 @@ async function vibeSearch() {
 
   } catch(err) {
     console.error('Vibe search failed:', err);
-    grid.innerHTML = `<div class="empty" style="color:#FF4455">Search failed: ${err.message}</div>`;
+    // FIX EF2: never interpolate err.message into innerHTML — the edge function
+    // echoes user-supplied input back in error messages, so a crafted query
+    // could inject arbitrary HTML/JS into the page (XSS). Use textContent on a
+    // pre-built element instead, which always escapes the string safely.
+    const errDiv = document.createElement('div');
+    errDiv.className = 'empty';
+    errDiv.style.color = '#FF4455';
+    errDiv.textContent = 'Search failed: ' + (err && err.message ? String(err.message).slice(0, 200) : 'Unknown error');
+    grid.innerHTML = '';
+    grid.appendChild(errDiv);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Search'; }
   }

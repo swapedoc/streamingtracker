@@ -284,6 +284,13 @@ def main():
 
     if not TMDB_API_KEY:
         print("❌ Missing TMDB_API_KEY in .env"); sys.exit(1)
+    # FIX ET1: check SUPABASE_URL/KEY before calling create_client().
+    # Without this, passing None to create_client() throws a cryptic TypeError
+    # deep inside the Supabase client constructor with no indication of which
+    # secret is missing. This is especially confusing in GitHub Actions where
+    # a missing secret silently becomes an empty string rather than raising early.
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("❌ Missing SUPABASE_URL or SUPABASE_KEY in .env"); sys.exit(1)
     if not YOUTUBE_API_KEY:
         print("⚠️  No YOUTUBE_API_KEY — will use TMDb-only (no YouTube fallback)")
     if args.dry_run:

@@ -5,7 +5,8 @@ JioHotstar and Apple TV+ catalog into discover_content.
 
 Fetches every movie and TV show available on these platforms in India
 from TMDb, auto-assigns a category, and upserts into Supabase.
-Existing rows are never overwritten if they already have a category set.
+category is only written for new rows — existing rows that already have a
+category set are never overwritten, preserving any manual curation.
 
 SETUP:
     pip install aiohttp python-dotenv supabase
@@ -293,12 +294,14 @@ async def fetch_all(api_key: str, content_types: list) -> list:
                             break
                         data   = await resp.json()
                         india  = data.get('results', {}).get('IN', {})
-                        # Include flatrate (subscription), free and ads tiers
-                        all_providers = (
-                            india.get('flatrate', []) +
-                            india.get('free', []) +
-                            india.get('ads', [])
-                        )
+                        # FIX #15: flatrate (paid subscription) only — strip free/ads tiers.
+                        # Including free/ads caused titles to appear in Discover as
+                        # "available on Netflix" when they were only on a free ad-supported
+                        # tier. Users clicked through and hit a paywall or the wrong page.
+                        # streaming_tracker.py DiscoverFlow already uses flatrate-only;
+                        # aligning here keeps both scripts consistent so a title's platform
+                        # label means the same thing regardless of which script last wrote it.
+                        all_providers = india.get('flatrate', [])
                         pids   = [p['provider_id'] for p in all_providers]
                         platforms = [
                             provider_id_to_name[pid]
@@ -405,6 +408,14 @@ def main():
             seen_pairs[key] = (item, platform)
 
     rows = []
+    # FIX FC1 (part 1/2): build a parallel list of computed categories keyed by
+    # (tmdb_id, platform) so we can fill them in a separate pass ONLY for rows
+    # where category IS NULL. 'category' is intentionally excluded from the upsert
+    # payload below — Supabase upsert updates every column in the payload on conflict,
+    # so including it would overwrite any manual curation done in the dashboard.
+    # The docstring said "existing categories are preserved" but the old code was
+    # silently wiping them every Sunday.
+    computed_categories: dict = {}
     for (item, platform) in seen_pairs.values():
         rows.append({
             'tmdb_id':        item['tmdb_id'],
@@ -416,12 +427,13 @@ def main():
             'imdb_rating':    item['imdb_rating'],
             'poster_path':    item['poster_path'],
             'overview':       item.get('overview'),
-            'category':       item['category'],
+            # 'category' intentionally omitted — filled below for NULL rows only
             'genre':          item.get('genre'),
             'tv_genre':       item.get('tv_genre'),
             'popularity':     item['popularity'],
             'source':         'catalog',
         })
+        computed_categories[(item['tmdb_id'], platform)] = item['category']
 
     print(f'\n  💾 Saving {len(rows)} rows to Supabase...\n')
 
@@ -445,12 +457,43 @@ def main():
             errors += len(chunk)
             print(f'\n  ⚡  Batch error at row {i}: {e}')
 
+    # FIX FC1 (part 2/2): back-fill category only for rows where it is NULL.
+    # This fires one UPDATE per batch (same chunking as the upsert above) —
+    # NOT per row — so it stays efficient even for a full 3000+ row catalog run.
+    # Rows that already have a category (manual or from a prior run) are untouched.
+    cat_filled = 0
+    cat_errors = 0
+    for i in range(0, len(rows), BATCH_SIZE):
+        chunk = rows[i:i + BATCH_SIZE]
+        # Group by category value so we send one update per distinct category
+        # per batch (avoids N individual calls while still being correct).
+        by_cat: dict = {}
+        for row in chunk:
+            cat = computed_categories[(row['tmdb_id'], row['platform'])]
+            by_cat.setdefault(cat, []).append(row['tmdb_id'])
+        for cat, tmdb_ids in by_cat.items():
+            try:
+                result = (
+                    db.table('discover_content')
+                    .update({'category': cat})
+                    .in_('tmdb_id', tmdb_ids)
+                    .is_('category', 'null')
+                    .execute()
+                )
+                cat_filled += len(result.data) if result.data else 0
+            except Exception as e:
+                cat_errors += len(tmdb_ids)
+                print(f'\n  ⚡  Category fill error at batch {i}: {e}')
+
     elapsed = time.time() - start
     print(f'\n\n  {"=" * 60}')
     print(f'  ✅  Done in {elapsed:.0f}s')
     print(f'  💾  Saved  : {saved}')
+    print(f'  🏷️   Categories filled (new rows only) : {cat_filled}')
     if errors:
-        print(f'  ⚠️   Errors : {errors}')
+        print(f'  ⚠️   Upsert errors : {errors}')
+    if cat_errors:
+        print(f'  ⚠️   Category fill errors : {cat_errors}')
     print(f'\n  ⚡  Run fetch_hindi_dubs.py next to tag Hindi audio.')
     print(f'  {"=" * 60}\n')
 
