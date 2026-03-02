@@ -102,4 +102,4 @@ jobs:
             -H "apikey: $SUPABASE_KEY" \
             -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"last_updated": "now()"}'
+            -d "{\"last_updated\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}"
