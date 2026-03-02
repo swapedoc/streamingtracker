@@ -1,80 +1,6 @@
 # streaming_tracker_v3.py - Two-Flow System: Watch Now + Discover
 # Run with: python3 streaming_tracker_v3.py
 
-"""
-STREAMING TRACKER V3.0 - TWO-FLOW SYSTEM
-
-FLOWS:
-1. WATCH NOW: Trending content with YouTube/Reddit reviews + scoring
-2. DISCOVER: Classics/Genres/Gems with basic availability check (no reviews/scoring)
-
-NEW DATABASE TABLE NEEDED:
-Run this SQL in Supabase:
-
-CREATE TABLE IF NOT EXISTS discover_content (
-    id BIGSERIAL PRIMARY KEY,
-    tmdb_id INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    original_title TEXT,
-    platform TEXT NOT NULL,
-    content_type TEXT NOT NULL,
-    release_year INTEGER,
-    imdb_rating FLOAT,
-    poster_path TEXT,
-    overview TEXT,
-    category TEXT NOT NULL,
-    genre TEXT,
-    popularity FLOAT,
-    stream_url TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(tmdb_id, platform)
-);
-
-CREATE INDEX IF NOT EXISTS idx_discover_category ON discover_content(category);
-CREATE INDEX IF NOT EXISTS idx_discover_platform ON discover_content(platform);
-CREATE INDEX IF NOT EXISTS idx_discover_genre ON discover_content(genre);
-
--- ── Binge Time + Trailer columns (run once) ───────────────────────────────────
-ALTER TABLE content          ADD COLUMN IF NOT EXISTS runtime          INTEGER;  -- minutes (movies)
-ALTER TABLE content          ADD COLUMN IF NOT EXISTS seasons          INTEGER;  -- TV only
-ALTER TABLE content          ADD COLUMN IF NOT EXISTS episode_count    INTEGER;  -- TV only
-ALTER TABLE content          ADD COLUMN IF NOT EXISTS episode_runtime  INTEGER;  -- mins per ep, TV only
-ALTER TABLE content          ADD COLUMN IF NOT EXISTS trailer_id       TEXT;     -- YouTube video ID
-ALTER TABLE content          ADD COLUMN IF NOT EXISTS genre            TEXT;     -- resolved genre label
-ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS runtime          INTEGER;
-ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS seasons          INTEGER;
-ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_count    INTEGER;
-ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_runtime  INTEGER;
-ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS trailer_id       TEXT;
-
--- ── Leaving Soon columns (run once) ─────────────────────────────────────────
--- Populated by JustWatchFetcher from the validUntil field on each offer.
--- NULL = no expiry date reported by JustWatch (does NOT mean it's staying forever).
-ALTER TABLE content          ADD COLUMN IF NOT EXISTS leaving_date DATE;
-ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS leaving_date DATE;
-
--- ── Vibe Score columns (run once) ────────────────────────────────────────────
-ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_score FLOAT;   -- 1.0 to 10.0
-ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_label TEXT;    -- e.g. "Scare Factor", "Laugh Meter"
-
--- ── Full review text (run once) ───────────────────────────────────────────────
--- review_text was previously truncated to 800-1000 chars before saving.
--- It is now stored at full length so you can re-run LLM prompts without re-scraping.
--- If your column is currently VARCHAR(n), widen it:
-ALTER TABLE reviews ALTER COLUMN review_text TYPE TEXT;
-
--- ── Manual trailer overrides (run once) ──────────────────────────────────────
--- Use when TMDb has no trailer for a title you know has one.
--- Get tmdb_id from: themoviedb.org → search title → number in URL
--- Get trailer_id from: youtube.com/watch?v=XXXXXXXXXX → the part after v=
-CREATE TABLE IF NOT EXISTS trailer_overrides (
-    tmdb_id    INTEGER PRIMARY KEY,
-    trailer_id TEXT NOT NULL,
-    note       TEXT,   -- optional: title name for your reference
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-"""
-
 import os
 import re
 import time
@@ -427,7 +353,7 @@ class TMDbResolver:
         if date_str:
             try:
                 return int(date_str.split('-')[0])
-            except:
+            except (ValueError, AttributeError):
                 pass
         return None
 
@@ -560,8 +486,8 @@ class TMDbResolver:
                         nxt = data.get('next_episode_to_air') or {}
                         ep_rt = nxt.get('runtime') or None
                     result['episode_runtime'] = ep_rt
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"   ⚡️ TMDb runtime fetch error: {e}")
 
         # ── Official trailer via TMDb /videos (free, no YouTube quota) ────
         try:
@@ -599,8 +525,8 @@ class TMDbResolver:
                                 break
                         if result['trailer_id']:
                             break
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"   ⚡️ TMDb trailer fetch error: {e}")
 
         # ── YouTube fallback — only fires when TMDb has no trailer ────────
         if not result['trailer_id'] and title:
@@ -729,7 +655,8 @@ class TMDbResolver:
 
             return None   # nothing trusted found — return None, not garbage
 
-        except Exception:
+        except Exception as e:
+            print(f"   ⚡️ JustWatch provider fetch error: {e}")
             return None
 
 # ============================================================================
@@ -890,7 +817,8 @@ class DiscoverFlow:
                                 parsed['language'] = 'hi'
                             items.append(parsed)
                         return items
-                except Exception:
+                except Exception as e:
+                    print(f"   ⚡️ JustWatch parse error (attempt {attempt+1}): {e}")
                     if attempt < 2:
                         await asyncio.sleep(0.75 * (attempt + 1))
             return []
@@ -979,7 +907,8 @@ class DiscoverFlow:
                                 if prov_done % 50 == 0 or prov_done == total_prov:
                                     print(f"   🔍 Providers: {prov_done}/{total_prov}...")
                                 return tmdb_id, ids
-                    except Exception:
+                    except Exception as e:
+                        print(f"   ⚡️ Provider fetch error for tmdb_id {tmdb_id} (attempt {attempt+1}): {e}")
                         if attempt < 2:
                             await aio.sleep(0.5 * (attempt + 1))
                 prov_done += 1
@@ -1562,8 +1491,8 @@ class RedditIngester:
                     if subs > 500:   # lowered from 1000 — valid small show subs exist
                         self._sub_cache[title] = slug
                         return slug
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"   ⚡️ Subreddit slug lookup error for '{title}': {e}")
 
         self._sub_cache[title] = None
         return None
@@ -1669,7 +1598,8 @@ class RedditIngester:
                             'score':     p.get('score', 0),
                         }})
                 return posts
-            except Exception:
+            except Exception as e:
+                print(f"   ⚡️ Reddit search error: {e}")
                 time.sleep(1)
         return []
 
@@ -1689,7 +1619,8 @@ class RedditIngester:
                     if len(data) >= 2:
                         return self._parse_comment_json(data[1])
                 break
-            except Exception:
+            except Exception as e:
+                print(f"   ⚡️ Reddit comment fetch error: {e}")
                 time.sleep(1)
         return []
 
@@ -1856,7 +1787,8 @@ class RedditIngester:
                 try:
                     self.db.table('reviews').upsert(review_data, on_conflict='source,source_id').execute()
                     count += 1
-                except: pass
+                except Exception as e:
+                    print(f"     ⚡️ Reddit review DB save error: {e}")
         if count > 0:
             print(f"     💾 Saved {count} Reddit comments")
 
@@ -2107,8 +2039,8 @@ class CriticReviewScraper:
                     if val:
                         tomatometer = int(val * 10) if val <= 10 else int(val)
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"   ⚡️ RT score parse error: {e}")
 
         if tomatometer is None:
             for selector in [
@@ -2692,8 +2624,8 @@ class YouTubeIngester:
             transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
             transcript_text = ' '.join([entry['text'] for entry in transcript_list])
             return transcript_text[:4000]
-        except:
-            return None
+        except Exception:
+            return None  # transcripts are optional — failure is expected
     
     def process_trending_content(self, trending_data: Dict, platform: str, platform_id: int):
         title = trending_data['title']
@@ -2936,8 +2868,8 @@ class YouTubeIngester:
                 try:
                     self.db.table('reviews').upsert(review_data, on_conflict='source,source_id').execute()
                     count += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"   ⚡️ TMDb review DB save error: {e}")
 
             if count:
                 print(f"   📝 Saved {count} TMDb reviews")
@@ -3633,8 +3565,8 @@ class AsyncWatchNowPipeline:
                     'sentiment': result['sentiment'], 'confidence': result['confidence'],
                     'weighted_sentiment': result['sentiment'] * result['confidence']
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"   ⚡️ YouTube review row build error: {e}")
         return rows
 
     # ── Bulk DB upsert ────────────────────────────────────────────────────
@@ -3655,8 +3587,8 @@ class AsyncWatchNowPipeline:
                 for r in batch:
                     try:
                         self.db.table('reviews').upsert(r, on_conflict='source,source_id').execute()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"   ⚡️ YouTube review DB upsert error: {e}")
 
     # ── Per-title orchestration ───────────────────────────────────────────
 
@@ -3934,7 +3866,8 @@ class JustWatchFetcher:
             if 'errors' in data:
                 return None
             return data
-        except Exception:
+        except Exception as e:
+            print(f"   ⚡️ JustWatch GQL fetch error: {e}")
             return None
 
     def _find_stream_url(self, title, media_type, platform):
@@ -4008,7 +3941,8 @@ class JustWatchFetcher:
                 data = r.json()
                 if 'errors' in data: return None
                 return data
-            except Exception:
+            except Exception as e:
+                print(f"   ⚡️ JustWatch URL fetch error: {e}")
                 return None
 
         def find_url(item):

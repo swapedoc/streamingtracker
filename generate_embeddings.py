@@ -18,7 +18,7 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-GEMINI_KEY   = os.getenv('GEMINI_API_KEY1')
+GEMINI_KEY   = os.getenv('GEMINI_API_KEY')
 MODEL        = 'gemini-embedding-001'   # 3072-dim
 BATCH_SIZE   = 100    # Gemini allows up to 100 texts per batchEmbedContents call
 MIN_INTERVAL = 4.5    # seconds between API calls (free tier: 15 req/min)
@@ -92,7 +92,7 @@ def main():
     args = parser.parse_args()
 
     if not all([SUPABASE_URL, SUPABASE_KEY, GEMINI_KEY]):
-        print('❌ Missing SUPABASE_URL, SUPABASE_KEY, or GEMINI_API_KEY1 in .env')
+        print('❌ Missing SUPABASE_URL, SUPABASE_KEY, or GEMINI_API_KEY in .env')
         sys.exit(1)
 
     db = create_client(SUPABASE_URL, SUPABASE_KEY)
