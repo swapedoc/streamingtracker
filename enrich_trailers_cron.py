@@ -157,8 +157,8 @@ def _yt_search(query: str, cap: int) -> str | None:
                         or channel_id in TRUSTED_CHANNEL_IDS):
                     continue
                 return vid_id
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'   ⚡️ YouTube search error: {e}')
     return None
 
 # ── TMDb helpers ──────────────────────────────────────────────────────────────
@@ -172,8 +172,8 @@ def _tmdb_get(path: str, params: dict) -> dict | None:
         )
         if r.status_code == 200:
             return r.json()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f'   ⚡️ TMDb API error for {path}: {e}')
     return None
 
 
@@ -305,8 +305,8 @@ def main():
         overrides = {r['tmdb_id']: r['trailer_id'] for r in ov}
         if overrides:
             print(f"   🎬 {len(overrides)} manual override(s) loaded")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f'   ⚡️ Failed to load trailer overrides: {e}')
 
     # Apply overrides immediately
     override_hits = [r for r in all_rows if r['tmdb_id'] in overrides and not r.get('trailer_id')]
@@ -316,8 +316,8 @@ def main():
                 db.table('discover_content').update(
                     {'trailer_id': overrides[r['tmdb_id']]}
                 ).eq('id', r['id']).execute()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"   ⚡️ Override DB save error for '{r['title']}': {e}")
         else:
             print(f"   [DRY] Override: {r['title']} → {overrides[r['tmdb_id']]}")
     if override_hits:

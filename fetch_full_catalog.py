@@ -312,7 +312,8 @@ async def fetch_all(api_key: str, content_types: list) -> list:
                         if done_count % 10 == 0 or done_count == total_jobs:
                             progress(done_count, total_jobs, 'pages fetched')
                         return items
-                except Exception:
+                except Exception as e:
+                    print(f'   ⚡️ TMDb page fetch error (attempt {attempt+1}): {e}')
                     if attempt < 2:
                         await asyncio.sleep(0.5 * (attempt + 1))
         done_count += 1
@@ -377,7 +378,8 @@ async def fetch_all(api_key: str, content_types: list) -> list:
                         ]
                         prov_map[tid] = platforms
                         break
-                except Exception:
+                except Exception as e:
+                    print(f'   ⚡️ Provider fetch error for tmdb_id {tid} (attempt {attempt+1}): {e}')
                     if attempt < 2:
                         await asyncio.sleep(0.5 * (attempt + 1))
         prov_done += 1

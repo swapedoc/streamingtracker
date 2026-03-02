@@ -117,8 +117,8 @@ def gql(query, variables, retries=3):
             if r.status_code == 200:
                 d = r.json()
                 return None if 'errors' in d else d
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'   ⚡️ JustWatch GQL error: {e}')
         if i < retries - 1:
             time.sleep(1)
     return None

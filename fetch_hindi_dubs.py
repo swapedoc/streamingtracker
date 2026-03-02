@@ -61,8 +61,8 @@ def _send_telegram_alert(message: str):
             json={'chat_id': TELEGRAM_CHAT_ID, 'text': f'🚨 StreamIQ — {message}'},
             timeout=10,
         )
-    except Exception:
-        pass  # alerting should never crash the main script
+    except Exception as e:
+        print(f'⚡️ Telegram alert send failed: {e}')  # alerting should never crash the main script
 
 
 class SchemaError(Exception):
@@ -214,8 +214,9 @@ def gql(query, variables, retries=3):
             if attempt < retries - 1:
                 continue
             return None
-        except Exception:
+        except Exception as e:
             if attempt == retries - 1:
+                print(f'   ⚡️ JustWatch GQL request failed: {e}')
                 return None
     return None
 
