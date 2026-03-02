@@ -40,8 +40,13 @@ jobs:
       # ── Sunday only: enrich trailers + runtime for discover_content ────
       # Runs AFTER catalog refresh so new rows are already in the DB.
       # Isolated from main tracker to protect the YouTube daily quota.
-      - name: Enrich trailers + runtime (Sundays only)
-        if: github.event.schedule == '0 2 * * 0' || inputs.mode == 'trailers-only'
+      - name: Enrich trailers + runtime (Sundays + catalog-only)
+        # FIX YML1: added catalog-only — without it, a manual catalog-only trigger
+        # left new rows with no trailer_id or runtime until the next Sunday (up to 7 days).
+        if: >
+          github.event.schedule == '0 2 * * 0' ||
+          inputs.mode == 'trailers-only' ||
+          inputs.mode == 'catalog-only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -80,6 +85,26 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python3 fetch_hindi_dubs.py
+      # ── Sunday only: populate stream URLs + embeddings for new catalog rows ──
+      # Runs streaming_tracker.py --discover-only which executes ONLY:
+      #   1. DiscoverFlow.save_discover_content()  — TMDb API, no YouTube
+      #   2. JustWatchFetcher.run_discover()        — JustWatch GraphQL, no YouTube
+      #   3. embed_new_discover()                   — Gemini embeddings, no YouTube
+      # FIX YML2: without this step, new Sunday catalog rows had no stream_url and
+      # were invisible in Vibe Search for up to 10h until the next 12h cron fired.
+      # NOTE: YOUTUBE_API_KEY is intentionally NOT passed here — --discover-only
+      # never calls AsyncWatchNowPipeline so no YouTube quota is consumed. This is
+      # the reason streaming_tracker.py is not run normally on Sundays and that
+      # constraint is preserved: Watch Now + full scoring still only runs on the
+      # 12h cron, never on Sundays.
+      - name: Populate stream URLs + embeddings for new catalog rows (Sundays only)
+        if: github.event.schedule == '0 2 * * 0'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python3 streaming_tracker.py --discover-only
       # ── Daily 9am IST: watchlist alerts ────────────────────────────────
       - name: Send watchlist alerts
         if: github.event.schedule == '30 3 * * *' || inputs.mode == 'alerts-only'
