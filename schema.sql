@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_discover_embedding ON discover_content
 -- FIX: id changed to BIGSERIAL (live DB uses integer sequence, kept as BIGSERIAL for safety)
 CREATE TABLE IF NOT EXISTS content (
     id               BIGSERIAL PRIMARY KEY,
-    tmdb_id          INTEGER   NOT NULL UNIQUE,
+    tmdb_id          INTEGER   NOT NULL,  -- FIX NEW-4: UNIQUE moved to (tmdb_id, platform) — supports multi-platform entries
     title            TEXT      NOT NULL,
     original_title   TEXT,
     platform         TEXT      NOT NULL,
@@ -86,6 +86,13 @@ CREATE TABLE IF NOT EXISTS content (
 );
 
 CREATE INDEX IF NOT EXISTS idx_content_platform ON content(platform);
+-- FIX NEW-4: multi-platform support — one row per (title, platform)
+-- Drop old single-column unique and add composite. For existing deployments:
+-- ALTER TABLE content DROP CONSTRAINT IF EXISTS content_tmdb_id_key;
+-- ALTER TABLE content ADD CONSTRAINT content_tmdb_id_platform_key UNIQUE (tmdb_id, platform);
+ALTER TABLE content DROP CONSTRAINT IF EXISTS content_tmdb_id_key;
+ALTER TABLE content ADD CONSTRAINT content_tmdb_id_platform_key UNIQUE (tmdb_id, platform);
+
 CREATE INDEX IF NOT EXISTS idx_content_type     ON content(content_type);
 
 -- ── Reviews table ─────────────────────────────────────────────────────────────
