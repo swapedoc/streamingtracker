@@ -1,5 +1,5 @@
-# streaming_tracker_v3.py - Two-Flow System: Watch Now + Discover
-# Run with: python3 streaming_tracker_v3.py
+# streaming_tracker.py - Two-Flow System: Watch Now + Discover
+# Run with: python3 streaming_tracker.py
 
 import os
 import re
@@ -1362,12 +1362,12 @@ class RedditIngester:
         if token:
             self._session.headers.update({
                 'Authorization': f'Bearer {token}',
-                'User-Agent': 'python:streamiq.scraper:v3.0 (by /u/stream_tracker_bot)',
+                'User-Agent': 'python:streamiq.scraper:v1.0 (by /u/stream_tracker_bot)',
             })
             print("   🔑 Reddit OAuth active (998 req/window)")
         else:
             self._session.headers.update({
-                'User-Agent': 'python:streamiq.scraper:v3.0 (by /u/stream_tracker_bot)',
+                'User-Agent': 'python:streamiq.scraper:v1.0 (by /u/stream_tracker_bot)',
             })
             print("   ⚠️  Reddit OAuth unavailable — falling back to unauthenticated")
         # Pre-load which content_ids already have fresh Reddit reviews
@@ -1413,7 +1413,7 @@ class RedditIngester:
         if not client_id or not client_secret:
             return None
 
-        ua = 'python:streamiq.scraper:v3.0 (by /u/stream_tracker_bot)'
+        ua = 'python:streamiq.scraper:v1.0 (by /u/stream_tracker_bot)'
         payload = (
             {'grant_type': 'password', 'username': username, 'password': password}
             if username and password
@@ -3545,7 +3545,7 @@ class AsyncWatchNowPipeline:
                       media_type: str, year: Optional[int], is_hindi: bool) -> List[dict]:
         """RT scraper — only runs when --critics flag passed, skipped by default.
         RT scraping costs 8-16s per title (2 retries × 8s timeout) and often
-        returns nothing. Enable with: python3 streaming_tracker_v3.py --critics
+        returns nothing. Enable with: python3 streaming_tracker.py --critics
         """
         if not Config.USE_CRITICS:
             return []
@@ -4223,7 +4223,7 @@ def main():
         print("🧠 LLM sentiment enabled (will be slower)")
 
     print("\n" + "="*70)
-    print("🎬 STREAMING TRACKER V3.0 - TWO-FLOW SYSTEM")
+    print("🎬 STREAMING TRACKER - TWO-FLOW SYSTEM")
     print("="*70)
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
