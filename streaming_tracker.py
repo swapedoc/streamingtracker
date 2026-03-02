@@ -288,7 +288,7 @@ class TMDbResolver:
         # Step 2: top up with /discover but only last 2 years, for BOTH media types
         if len(all_results) < limit:
             min_date = f"{current_year - 3}-01-01"
-            for mt in ["movie", "tv"]:
+            for mt in ([media_type] if media_type in ("movie", "tv") else ["movie", "tv"]):
                 if len(all_results) >= limit:
                     break
                 discover_params = {
@@ -296,7 +296,7 @@ class TMDbResolver:
                     "sort_by": "popularity.desc",
                     "with_original_language": "hi",
                     "vote_count.gte": 20,
-                    "with_watch_providers": "8|119|350|2336|220",
+                    "with_watch_providers": "8|119|350|2336",
                     "watch_region": "IN",
                     "page": 1
                 }
@@ -697,7 +697,7 @@ class DiscoverFlow:
                 'sort_by': 'vote_average.desc',
                 'vote_average.gte': 8.0,
                 'vote_count.gte': 500,
-                'with_watch_providers': '8|119|350|2336|220',
+                'with_watch_providers': '8|119|350|2336',
                 'watch_region': 'IN',
             }
             for page in range(1, PAGES_PER_TYPE + 1):
@@ -727,7 +727,7 @@ class DiscoverFlow:
                     'sort_by': 'popularity.desc',
                     'vote_average.gte': 6.0 if mt == 'tv' else 6.5,
                     'vote_count.gte':   50  if mt == 'tv' else 100,
-                    'with_watch_providers': '8|119|350|2336|220',
+                    'with_watch_providers': '8|119|350|2336',
                     'watch_region': 'IN',
                 }
                 for page in range(1, PAGES_PER_TYPE + 1):
@@ -747,7 +747,7 @@ class DiscoverFlow:
                 'vote_count.lte': 5000,
                 'vote_average.gte': 7.0,
                 date_key: six_months_ago,
-                'with_watch_providers': '8|119|350|2336|220',
+                'with_watch_providers': '8|119|350|2336',
                 'watch_region': 'IN',
             }
             for page in range(1, 3):   # 2 pages × 2 types = 60 gems max
@@ -765,7 +765,7 @@ class DiscoverFlow:
                     'with_original_language': lang,
                     'sort_by': 'popularity.desc',
                     'vote_count.gte': 20,
-                    'with_watch_providers': '8|119|350|2336|220',
+                    'with_watch_providers': '8|119|350|2336',
                     'watch_region': 'IN',
                 }
                 if mt == 'movie':
@@ -1055,8 +1055,16 @@ class DiscoverFlow:
             if len(fresh_keys) < 50:
                 print("   ⚠️  Fetch returned very few titles — skipping stale cleanup as safety measure")
             else:
-                existing = self.db.table('discover_content') \
-                    .select('id, tmdb_id, platform, source').execute().data or []
+                existing = []
+                for _start in range(0, 100_000, 1000):
+                    _page = self.db.table('discover_content') \
+                        .select('id, tmdb_id, platform, source') \
+                        .range(_start, _start + 999).execute()
+                    if not _page.data:
+                        break
+                    existing.extend(_page.data)
+                    if len(_page.data) < 1000:
+                        break
 
                 stale_ids = [
                     row['id'] for row in existing
@@ -1086,6 +1094,8 @@ class SentimentAnalyzer:
     # With 12 concurrent titles each calling Groq, all 12 hit the API simultaneously — instant 429.
     # Serialising them with a lock means Groq gets one call at a time.
     _groq_lock = threading.Lock()
+    _groq_rate_limit_until: float = 0.0   # shared across all instances
+    _gemini_rate_limit_until: float = 0.0  # shared across all instances
 
     def __init__(self):
         # Always initialize VADER as final fallback
@@ -1095,7 +1105,6 @@ class SentimentAnalyzer:
         # Tier 1: Groq (Fastest & Most generous free tier)
         self.groq_client = None
         self.use_groq = False
-        self.groq_rate_limit_until = 0  # timestamp when Groq is available again
         groq_key = os.getenv('GROQ_API_KEY')
         if groq_key:
             try:
@@ -1132,7 +1141,7 @@ class SentimentAnalyzer:
         
         # Try Tier 1: Groq
         if self.use_groq:
-            if self.groq_rate_limit_until > time.time():
+            if SentimentAnalyzer._groq_rate_limit_until > time.time():
                 pass  # still in cooldown, skip to Gemini silently
             else:
                 result = self._groq_analyze(text)
@@ -1182,7 +1191,7 @@ Review: {text[:2000]}"""
         except Exception as e:
             err = str(e)
             if '429' in err or 'rate' in err.lower():
-                self.groq_rate_limit_until = time.time() + 60
+                SentimentAnalyzer._groq_rate_limit_until = time.time() + 60
                 print(f"  ⚡️ Groq rate limited — cooling down 60s, trying Gemini...")
             elif 'Expecting value' in err or 'JSONDecodeError' in err or len(err.strip()) == 0:
                 pass  # empty response from Groq — silent fallback to Gemini, not an error
@@ -1191,6 +1200,8 @@ Review: {text[:2000]}"""
             return None
     
     def _gemini_analyze(self, text: str) -> Optional[Dict]:
+        if SentimentAnalyzer._gemini_rate_limit_until > time.time():
+            return None  # still in cooldown
         try:
             prompt = f"""Analyze the sentiment of this movie/TV review.
 
@@ -1225,8 +1236,8 @@ Where:
             
         except Exception as e:
             if '429' in str(e) or 'RESOURCE_EXHAUSTED' in str(e):
-                print(f"  ⚡️ Gemini rate limited, using VADER...")
-                self.use_gemini = False
+                SentimentAnalyzer._gemini_rate_limit_until = time.time() + 60
+                print(f"  ⚡️ Gemini rate limited — cooling down 60s...")
             return None
     
     def _vader_analyze(self, text: str) -> Dict:
@@ -1293,15 +1304,16 @@ Return ONLY a JSON object, no extra text:
 {{"vibe_score": <number 1-10>, "reasoning": "<one sentence>"}}"""
 
         # Try Groq first
-        if self.use_groq and self.groq_rate_limit_until <= time.time():
+        if self.use_groq and SentimentAnalyzer._groq_rate_limit_until <= time.time():
             try:
-                response = self.groq_client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.2,
-                    max_tokens=80,
-                    timeout=10,
-                )
+                with self._groq_lock:  # serialize vibe calls same as _groq_analyze
+                    response = self.groq_client.chat.completions.create(
+                        model="llama-3.1-8b-instant",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.2,
+                        max_tokens=80,
+                        timeout=10,
+                    )
                 raw = response.choices[0].message.content.strip()
                 raw = raw.replace('```json', '').replace('```', '').strip()
                 result = json.loads(raw)
@@ -1310,11 +1322,11 @@ Return ONLY a JSON object, no extra text:
                     return {'vibe_score': round(score, 1), 'vibe_label': metric}
             except Exception as e:
                 if '429' in str(e) or 'rate' in str(e).lower():
-                    self.groq_rate_limit_until = time.time() + 60
+                    SentimentAnalyzer._groq_rate_limit_until = time.time() + 60
                 # Non-fatal — fall through to Gemini
 
         # Try Gemini
-        if self.use_gemini:
+        if self.use_gemini and SentimentAnalyzer._gemini_rate_limit_until <= time.time():
             try:
                 response = self.gemini_client.models.generate_content(
                     model='gemini-2.0-flash-exp',
@@ -1327,7 +1339,7 @@ Return ONLY a JSON object, no extra text:
                     return {'vibe_score': round(score, 1), 'vibe_label': metric}
             except Exception as e:
                 if '429' in str(e) or 'RESOURCE_EXHAUSTED' in str(e):
-                    self.use_gemini = False
+                    SentimentAnalyzer._gemini_rate_limit_until = time.time() + 60
                 # Non-fatal — return None
 
         return None  # Both tiers failed — score row still saves fine without vibe
@@ -1490,8 +1502,12 @@ class RedditIngester:
         # Try both slug variants — always use public URL, never oauth for this check
         for slug in dict.fromkeys([slug_nospace, slug_under]):
             try:
-                r = self._session.get(
+                # Must use plain requests (not self._session) — self._session has
+                # Authorization: Bearer which www.reddit.com rejects with 403.
+                # about.json is publicly readable without OAuth.
+                r = requests.get(
                     f"https://www.reddit.com/r/{slug}/about.json",
+                    headers={"User-Agent": "python:streamiq.scraper:v1.0"},
                     timeout=4,
                 )
                 if r.status_code == 200:
@@ -2501,7 +2517,7 @@ class AsyncWatchNowPipeline:
             rows = (self.db.table('reviews')
                        .select('source_id,reviewer,review_text,content_id')
                        .eq('source', 'youtube')
-                       .gte('created_at', cutoff)
+                       .gte('updated_at', cutoff)  # updated_at survives cleanup cycles; created_at is wiped on cascade
                        .execute().data or [])
             # Group by content_id -> list of video stubs
             from collections import defaultdict
@@ -2836,6 +2852,7 @@ class AsyncWatchNowPipeline:
                 'discovery_source': title_data.get('category', 'trending'),
                 'genre': title_data.get('genre'),
                 'tv_genre': title_data.get('tv_genre'),
+                'updated_at': datetime.utcnow().isoformat(),  # track last seen for YT cache TTL
             }
             try:
                 result = self.db.table('content').upsert(
@@ -3047,6 +3064,7 @@ class JustWatchFetcher:
         'nfx': 'Netflix',
         'prv': 'Prime Video',
         'jhs': 'Jiohotstar',   # confirmed live
+        'hst': 'Jiohotstar',   # legacy shortName — still returned by JustWatch for some titles
         'dnp': 'Jiohotstar',   # legacy
         'hot': 'Jiohotstar',   # legacy
         'jio': 'Jiohotstar',   # JioCinema merged into Jiohotstar
@@ -3365,8 +3383,7 @@ def main():
         return
     
     if not Config.YOUTUBE_API_KEY:
-        print("❌ Missing YOUTUBE_API_KEY in .env")
-        return
+        print("⚠️  No YOUTUBE_API_KEY — YouTube reviews disabled. TMDb + Reddit still run.")
     
     if os.getenv("OMDB_API_KEY"):
         print("✅ OMDB API key found — RT scores via API (reliable)")

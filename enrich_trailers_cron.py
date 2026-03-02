@@ -107,9 +107,11 @@ _yt_lock        = Lock()
 _yt_calls_made  = 0
 _yt_quota_blown = False   # set True on 403 or once cap is reached
 
-def _yt_search(query: str, cap: int) -> str | None:
+def _yt_search(queries: list, cap: int) -> str | None:
     """
     Search YouTube for an official trailer from a trusted channel.
+    Accepts a list of queries tried in order — first match wins.
+    Counts as ONE quota unit regardless of how many queries are attempted.
     Returns video_id or None. Thread-safe quota guard — stops on 403 or cap.
     """
     global _yt_calls_made, _yt_quota_blown
@@ -124,7 +126,6 @@ def _yt_search(query: str, cap: int) -> str | None:
         _yt_calls_made += 1
         call_num = _yt_calls_made
 
-    queries = [query, query.rsplit(' ', 1)[0] if ' ' in query else query]  # with year, then without
     for q in queries:
         try:
             r = SESSION.get(
@@ -244,9 +245,15 @@ def enrich_one(row: dict, yt_cap: int, dry_run: bool) -> dict:
         trailer_id = _get_trailer_from_tmdb(tmdb_id, media_type)
 
         if not trailer_id and title and YOUTUBE_API_KEY:
-            # YouTube fallback — quota-protected
-            q = f"{title} {year} official trailer" if year else f"{title} official trailer"
-            trailer_id = _yt_search(q, yt_cap)
+            # YouTube fallback — quota-protected.
+            # Two-pass: try with year first (more specific), then without (broader).
+            # Both attempts count as ONE quota unit inside _yt_search.
+            yt_queries = (
+                [f"{title} {year} official trailer", f"{title} official trailer"]
+                if year else
+                [f"{title} official trailer"]
+            )
+            trailer_id = _yt_search(yt_queries, yt_cap)
             if trailer_id:
                 updates['_yt_fallback'] = True  # for logging only — stripped before DB save
 
