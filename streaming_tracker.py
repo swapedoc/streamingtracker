@@ -6,6 +6,7 @@ import re
 import time
 import math
 import asyncio
+import json
 import requests
 import numpy as np
 import feedparser
@@ -144,9 +145,8 @@ class TMDbResolver:
     
     def get_trending(self, media_type='all', time_window='week', limit=20) -> List[Dict]:
         """Get trending content from TMDb — supports multi-page fetching for limit > 20"""
-        import math as _math
         url = f"{self.base_url}/trending/{media_type}/{time_window}"
-        pages_needed = _math.ceil(limit / 20)
+        pages_needed = math.ceil(limit / 20)
         all_results = []
 
         for page in range(1, pages_needed + 1):
@@ -162,8 +162,7 @@ class TMDbResolver:
                     if attempt == 3:
                         print(f"TMDb trending error (page {page}): {e}")
                     else:
-                        import time as _time
-                        _time.sleep(attempt + 1)
+                        time.sleep(attempt + 1)
 
         data = {'results': all_results[:limit]}
 
@@ -682,7 +681,6 @@ class DiscoverFlow:
         Build the full list of (media_type, params, category, meta) fetch jobs
         without hitting the network. Each job = one TMDb /discover page request.
         """
-        import math
         jobs = []
         PAGES_PER_TYPE = 4   # 4 pages × 20 results = 80 per media_type per category
 
@@ -829,10 +827,8 @@ class DiscoverFlow:
         aiohttp session — eliminates the slow per-item sync thread-pool entirely.
         """
         import aiohttp
-        import asyncio as aio
-
         # ── Phase 1: fetch all /discover pages ────────────────────────────
-        page_sem = aio.Semaphore(8)
+        page_sem = asyncio.Semaphore(8)
         connector = aiohttp.TCPConnector(ssl=False, limit=20)
 
         done_count = 0
@@ -841,11 +837,11 @@ class DiscoverFlow:
         async def _fetch_with_progress(session, job, semaphore):
             nonlocal done_count
             try:
-                result = await aio.wait_for(
+                result = await asyncio.wait_for(
                     self._fetch_page(session, job, semaphore),
                     timeout=20
                 )
-            except aio.TimeoutError:
+            except asyncio.TimeoutError:
                 print(f"   ⏱️  Timeout: {job.get('category','?')} page {job.get('page','?')}")
                 result = []
             except Exception as e:
@@ -857,7 +853,7 @@ class DiscoverFlow:
 
         async with aiohttp.ClientSession(connector=connector) as session:
             page_tasks = [_fetch_with_progress(session, job, page_sem) for job in jobs]
-            page_results = await aio.gather(*page_tasks, return_exceptions=True)
+            page_results = await asyncio.gather(*page_tasks, return_exceptions=True)
 
             raw_items: List[Dict] = []
             for r in page_results:
@@ -880,7 +876,7 @@ class DiscoverFlow:
             for item in unique_items:
                 tmdb_id_to_items.setdefault(item['tmdb_id'], []).append(item)
 
-            provider_sem = aio.Semaphore(40)
+            provider_sem = asyncio.Semaphore(40)
             prov_done = 0
             total_prov = len(tmdb_id_to_items)
 
@@ -894,7 +890,7 @@ class DiscoverFlow:
                         async with provider_sem:
                             async with session.get(url, params=params, timeout=10) as resp:
                                 if resp.status == 429:
-                                    await aio.sleep(2 ** attempt)
+                                    await asyncio.sleep(2 ** attempt)
                                     continue
                                 if resp.status != 200:
                                     prov_done += 1
@@ -910,7 +906,7 @@ class DiscoverFlow:
                     except Exception as e:
                         print(f"   ⚡️ Provider fetch error for tmdb_id {tmdb_id} (attempt {attempt+1}): {e}")
                         if attempt < 2:
-                            await aio.sleep(0.5 * (attempt + 1))
+                            await asyncio.sleep(0.5 * (attempt + 1))
                 prov_done += 1
                 return tmdb_id, []
 
@@ -921,7 +917,7 @@ class DiscoverFlow:
                 fetch_providers(tid, items[0]['content_type'])
                 for tid, items in unique_tmdb
             ]
-            provider_results = await aio.gather(*provider_tasks, return_exceptions=True)
+            provider_results = await asyncio.gather(*provider_tasks, return_exceptions=True)
             print(f"   ✅ Providers done")
 
             # Build provider map: tmdb_id -> [platform_name, ...]
@@ -944,7 +940,6 @@ class DiscoverFlow:
 
     def fetch_all_discover(self) -> List[Dict]:
         """Entry point — builds jobs, runs async fetch+provider check, deduplicates."""
-        import asyncio
         jobs = self._build_jobs()
         print(f"   🚀 Firing {len(jobs)} TMDb page requests concurrently...")
 
@@ -1126,9 +1121,8 @@ class SentimentAnalyzer:
             return {'sentiment': 0, 'confidence': 0.0}
         
         # Try Tier 1: Groq
-        import time as _t
         if self.use_groq:
-            if self.groq_rate_limit_until > _t.time():
+            if self.groq_rate_limit_until > time.time():
                 pass  # still in cooldown, skip to Gemini silently
             else:
                 result = self._groq_analyze(text)
@@ -1178,8 +1172,7 @@ Review: {text[:2000]}"""
         except Exception as e:
             err = str(e)
             if '429' in err or 'rate' in err.lower():
-                import time as _t
-                self.groq_rate_limit_until = _t.time() + 60
+                self.groq_rate_limit_until = time.time() + 60
                 print(f"  ⚡️ Groq rate limited — cooling down 60s, trying Gemini...")
             elif 'Expecting value' in err or 'JSONDecodeError' in err or len(err.strip()) == 0:
                 pass  # empty response from Groq — silent fallback to Gemini, not an error
@@ -1289,11 +1282,8 @@ Based ONLY on what the reviews say, rate the "{metric}" of this title on a scale
 Return ONLY a JSON object, no extra text:
 {{"vibe_score": <number 1-10>, "reasoning": "<one sentence>"}}"""
 
-        import time as _t
-        import json as _json
-
         # Try Groq first
-        if self.use_groq and self.groq_rate_limit_until <= _t.time():
+        if self.use_groq and self.groq_rate_limit_until <= time.time():
             try:
                 response = self.groq_client.chat.completions.create(
                     model="llama-3.1-8b-instant",
@@ -1304,13 +1294,13 @@ Return ONLY a JSON object, no extra text:
                 )
                 raw = response.choices[0].message.content.strip()
                 raw = raw.replace('```json', '').replace('```', '').strip()
-                result = _json.loads(raw)
+                result = json.loads(raw)
                 score = float(result.get('vibe_score', 0))
                 if 1 <= score <= 10:
                     return {'vibe_score': round(score, 1), 'vibe_label': metric}
             except Exception as e:
                 if '429' in str(e) or 'rate' in str(e).lower():
-                    self.groq_rate_limit_until = _t.time() + 60
+                    self.groq_rate_limit_until = time.time() + 60
                 # Non-fatal — fall through to Gemini
 
         # Try Gemini
@@ -1321,7 +1311,7 @@ Return ONLY a JSON object, no extra text:
                     contents=prompt,
                 )
                 raw = response.text.strip().replace('```json', '').replace('```', '').strip()
-                result = _json.loads(raw)
+                result = json.loads(raw)
                 score = float(result.get('vibe_score', 0))
                 if 1 <= score <= 10:
                     return {'vibe_score': round(score, 1), 'vibe_label': metric}
@@ -2032,7 +2022,7 @@ class CriticReviewScraper:
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 import json as _json
-                data = _json.loads(script.string or '')
+                data = json.loads(script.string or '')
                 rating = data.get('aggregateRating', {})
                 if rating:
                     val = self._safe_float(str(rating.get('ratingValue', '')))
@@ -2096,345 +2086,6 @@ class CriticReviewScraper:
 
 
     # ------------------------------------------------------------------
-    # DECIDER — Stream It or Skip It
-    # ------------------------------------------------------------------
-    def scrape_decider(self, title: str, year: Optional[int] = None) -> Optional[Dict]:
-        # Decider search is Cloudflare-blocked — use their RSS feed to find the review URL
-        # RSS search endpoint works without JS: /feed/?s=<query>
-        slug_plus = title.lower().replace(" ", "+")
-        rss_url = f"https://decider.com/feed/?s={slug_plus}+stream+it+or+skip+it"
-        rss_soup = self._get(rss_url)
-
-        link = None
-        if rss_soup:
-            # RSS items have <link> tags with the full URL
-            for item in rss_soup.find_all('item'):
-                item_link = item.find('link')
-                item_title = item.find('title')
-                if item_link and item_title:
-                    href = item_link.get_text(strip=True) or item_link.next_sibling
-                    if isinstance(href, str) and 'stream-it-or-skip-it' in href:
-                        title_words = [w for w in title.lower().split() if len(w) > 2]
-                        if any(w in href.lower() for w in title_words[:2]):
-                            link = href.strip()
-                            self._log(f"Decider RSS link: {link}")
-                            break
-
-        if not link:
-            self._log("Decider: no Stream It or Skip It link found in RSS feed")
-            return None
-
-        review_soup = self._get(link)
-        if not review_soup:
-            return None
-
-        verdict_text = ''
-        for tag in review_soup.find_all(['h2', 'h3', 'strong', 'div', 'p']):
-            text = tag.get_text(separator=' ', strip=True).upper()
-            if any(v in text for v in ['STREAM IT', 'SKIP IT', 'SOME STREAMS']):
-                verdict_text = text[:100]
-                self._log(f"Decider verdict text: {verdict_text}")
-                break
-
-        if not verdict_text:
-            self._log("Decider: verdict phrase not found on review page")
-            return None
-
-        if 'SKIP IT' in verdict_text:
-            sentiment, confidence = -1, 0.95
-        elif 'SOME STREAMS' in verdict_text:
-            sentiment, confidence = 0, 0.8
-        else:
-            sentiment, confidence = 1, 0.95
-
-        content_div = review_soup.select_one('div.entry-content, div.post-content, article')
-        body = ''
-        if content_div:
-            body = ' '.join(p.get_text(strip=True) for p in content_div.find_all('p')[:6])
-
-        return {
-            'source': 'decider',
-            'url': link,
-            'verdict': verdict_text[:80],
-            'sentiment': sentiment,
-            'confidence': confidence,
-            'text': body or verdict_text,
-            'reviewer': 'Decider'
-        }
-
-    # ------------------------------------------------------------------
-    # ROGEREBERT.COM
-    # ------------------------------------------------------------------
-    def scrape_rogerebert(self, title: str, media_type: str) -> Optional[Dict]:
-        # rogerebert.com uses predictable /reviews/<slug> URLs — try candidates directly
-        slug = re.sub(r"[^a-z0-9\s]", "", title.lower()).strip()
-        slug = re.sub(r"\s+", "-", slug)
-        # Try common slug variants
-        year_suffix = ""  # can extend later if needed
-        candidates = [
-            f"https://www.rogerebert.com/reviews/{slug}",
-            f"https://www.rogerebert.com/reviews/{slug}-film-review",
-            f"https://www.rogerebert.com/reviews/the-{slug}" if not slug.startswith("the-") else None,
-        ]
-        candidates = [c for c in candidates if c]
-
-        link = None
-        for url in candidates:
-            soup_check = self._get(url)
-            if soup_check and not soup_check.select_one('[class*="error"]'):
-                # Verify it looks like a review page (has review body or star rating)
-                if soup_check.select_one('div.review-content, div[itemprop="reviewBody"], [class*="star-rating"], [aria-label*="star"]'):
-                    link = url
-                    self._log(f"RogerEbert direct URL hit: {url}")
-                    break
-            time.sleep(0.5)
-
-        if not link:
-            self._log("RogerEbert: no direct URL matched")
-            return None
-
-        review_soup = self._get(link)
-        if not review_soup:
-            return None
-
-        stars = None
-        for selector in [
-            '[aria-label*="star"]', 'abbr[title*="star"]',
-            '[class*="star-rating"]', '[class*="starRating"]'
-        ]:
-            tag = review_soup.select_one(selector)
-            if tag:
-                label = tag.get('aria-label', '') or tag.get('title', '') or tag.get_text()
-                val = self._safe_float(label)
-                if val is not None and 0 <= val <= 4:
-                    stars = val
-                    self._log(f"RogerEbert stars: {stars}")
-                    break
-
-        body_tag = review_soup.select_one('div.review-content, div[itemprop="reviewBody"], div.page-content')
-        body = body_tag.get_text(strip=True) if body_tag else ''
-
-        if stars is not None:
-            if stars >= 3:
-                sentiment, confidence = 1, min(1.0, stars / 4)
-            elif stars <= 1.5:
-                sentiment, confidence = -1, min(1.0, (2 - stars) / 2)
-            else:
-                sentiment, confidence = 0, 0.5
-        elif body:
-            r = self.sentiment.analyze(body[:1000])
-            sentiment, confidence = r['sentiment'], r['confidence']
-            self._log("RogerEbert: no star rating, used text sentiment")
-        else:
-            self._log("RogerEbert: no rating and no body text")
-            return None
-
-        return {
-            'source': 'rogerebert',
-            'url': link,
-            'verdict': f"{stars}/4 stars" if stars is not None else 'Text only',
-            'sentiment': sentiment,
-            'confidence': confidence,
-            'text': body,
-            'reviewer': 'RogerEbert.com'
-        }
-
-    # ------------------------------------------------------------------
-    # VULTURE
-    # ------------------------------------------------------------------
-    def scrape_vulture(self, title: str) -> Optional[Dict]:
-        # Vulture review URLs follow predictable patterns — try candidates directly
-        slug = re.sub(r"[^a-z0-9\s]", "", title.lower()).strip()
-        slug = re.sub(r"\s+", "-", slug)
-        candidates = [
-            f"https://www.vulture.com/article/{slug}-review",
-            f"https://www.vulture.com/movies/{slug}-review",
-            f"https://www.vulture.com/tv/{slug}-review",
-            f"https://www.vulture.com/article/{slug}-movie-review",
-            f"https://www.vulture.com/article/{slug}-tv-review",
-        ]
-
-        link = None
-        review_soup = None
-        for url in candidates:
-            soup_check = self._get(url)
-            if soup_check and soup_check.select_one(
-                'div.article-content, section.article-body, div[class*="body"], div[class*="article"]'
-            ):
-                link = url
-                review_soup = soup_check
-                self._log(f"Vulture direct URL hit: {url}")
-                break
-            time.sleep(0.5)
-
-        if not link or not review_soup:
-            self._log("Vulture: no direct URL matched")
-            return None
-
-        grade_map = {
-            'A+': (1, 1.0), 'A': (1, 0.95), 'A-': (1, 0.85),
-            'B+': (1, 0.75), 'B': (1, 0.65), 'B-': (0, 0.55),
-            'C+': (0, 0.55), 'C': (0, 0.5), 'C-': (-1, 0.55),
-            'D+': (-1, 0.65), 'D': (-1, 0.75), 'D-': (-1, 0.85), 'F': (-1, 0.95)
-        }
-
-        grade = None
-        for tag in review_soup.find_all(['span', 'div', 'p']):
-            text = tag.get_text(strip=True)
-            if re.match(r'^[A-F][+-]?$', text):
-                grade = text
-                self._log(f"Vulture grade: {grade}")
-                break
-
-        body_tag = review_soup.select_one('div.article-content, section.article-body, div[class*="body"]')
-        body = body_tag.get_text(strip=True) if body_tag else ''
-
-        if grade and grade in grade_map:
-            sentiment, confidence = grade_map[grade]
-        elif body:
-            r = self.sentiment.analyze(body[:1000])
-            sentiment, confidence = r['sentiment'], r['confidence']
-            grade = 'N/A'
-            self._log("Vulture: no grade found, used text sentiment")
-        else:
-            self._log("Vulture: no grade and no body")
-            return None
-
-        return {
-            'source': 'vulture',
-            'url': link,
-            'verdict': f"Grade: {grade}",
-            'sentiment': sentiment,
-            'confidence': confidence,
-            'text': body,
-            'reviewer': 'Vulture'
-        }
-
-    # ------------------------------------------------------------------
-    # BOLLYWOOD HUNGAMA
-    # ------------------------------------------------------------------
-    def scrape_bollywood_hungama(self, title: str) -> Optional[Dict]:
-        slug = re.sub(r"[^a-z0-9\s-]", "", title.lower()).strip().replace(' ', '-')
-        urls = [
-            f"https://www.bollywoodhungama.com/movie/{slug}/review/",
-            f"https://www.bollywoodhungama.com/search/?q={title.replace(' ', '+')}",
-        ]
-
-        for url in urls:
-            soup = self._get(url)
-            if not soup:
-                continue
-
-            stars = None
-            for selector in [
-                '[class*="rating"] span', '[class*="star-rating"]',
-                'meta[itemprop="ratingValue"]', '[class*="review-score"]'
-            ]:
-                tag = soup.select_one(selector)
-                if tag:
-                    val = self._safe_float(tag.get('content', '') or tag.get_text())
-                    if val and 0 < val <= 5:
-                        stars = val
-                        self._log(f"BollywoodHungama stars: {stars} from {selector}")
-                        break
-
-            if stars is None:
-                self._log(f"BollywoodHungama: no rating found at {url}")
-                continue
-
-            if stars >= 3.5:
-                sentiment, confidence = 1, min(1.0, stars / 5)
-            elif stars <= 2.0:
-                sentiment, confidence = -1, min(1.0, (3 - stars) / 3)
-            else:
-                sentiment, confidence = 0, 0.5
-
-            body_tag = soup.select_one('div.review-body, div[class*="review-content"], article')
-            body = body_tag.get_text(strip=True) if body_tag else ''
-
-            return {
-                'source': 'bollywood_hungama',
-                'url': url,
-                'verdict': f"{stars}/5 stars",
-                'sentiment': sentiment,
-                'confidence': confidence,
-                'text': body,
-                'reviewer': 'Bollywood Hungama'
-            }
-        return None
-
-    # ------------------------------------------------------------------
-    # METACRITIC
-    # ------------------------------------------------------------------
-    def scrape_metacritic(self, title: str, media_type: str) -> Optional[Dict]:
-        content_type = 'tv' if media_type == 'tv' else 'movie'
-        base_slug = re.sub(r"[^a-z0-9\s-]", "", title.lower()).strip().replace(' ', '-')
-
-        # Build candidate slugs — Metacritic sometimes uses full subtitles for sequels
-        candidates = [base_slug]
-
-        # If title ends with a bare number (e.g. "Pushpa 2"), expand to common sequel patterns
-        m = re.match(r'^(.+)-(\d+)$', base_slug)
-        if m:
-            stem, num = m.group(1), m.group(2)
-            ordinals = {'2': 'two', '3': 'three', '4': 'four'}
-            candidates += [
-                f"{stem}-the-rule---part-{num}",  # Pushpa 2 (triple dash edge case)
-                f"{stem}-the-rule-part-{num}",
-                f"{stem}-part-{num}",
-                f"{stem}-{ordinals.get(num, num)}",
-            ]
-
-        soup = None
-        used_url = None
-        for slug in candidates:
-            url = f"https://www.metacritic.com/{content_type}/{slug}/"
-            soup = self._get(url)
-            if soup:
-                used_url = url
-                self._log(f"Metacritic matched: {url}")
-                break
-        if not soup:
-            return None
-
-        score = None
-        for selector in [
-            'div.c-siteReviewScore span',
-            'span[class*="metascore"]',
-            'div[class*="metascore_w"] span',
-            '[data-v-app] span.c-siteReviewScore_background span',
-            'span.c-siteReviewScore_background'
-        ]:
-            tag = soup.select_one(selector)
-            if tag:
-                val = self._safe_int(tag.get_text(strip=True))
-                if val and 0 <= val <= 100:
-                    score = val
-                    self._log(f"Metacritic score: {score} from {selector}")
-                    break
-
-        if score is None:
-            self._log("Metacritic: score not found — page may be JS-rendered")
-            return None
-
-        if score >= 61:
-            sentiment, confidence = 1, min(1.0, (score - 60) / 40)
-        elif score <= 40:
-            sentiment, confidence = -1, min(1.0, (41 - score) / 41)
-        else:
-            sentiment, confidence = 0, 0.5
-
-        return {
-            'source': 'metacritic',
-            'url': url,
-            'verdict': f"Metascore: {score}/100",
-            'sentiment': sentiment,
-            'confidence': confidence,
-            'text': f"Metacritic aggregated critic score: {score}/100",
-            'reviewer': 'Metacritic'
-        }
-
-    # ------------------------------------------------------------------
     # MAIN ENTRY POINT
     # ------------------------------------------------------------------
     def fetch_all(self, content_id: int, title: str, media_type: str,
@@ -2494,24 +2145,28 @@ class ScoringEngine:
     
     @staticmethod
     def normalize_imdb(rating: float) -> float:
-        if rating is None or rating < 0:
+        if rating is None or rating <= 0:
             return 50
         return max(0, min(100, (rating - 5) * 20))
     
     @staticmethod
     def get_dynamic_weights(release_year: int) -> Dict:
-        """Dynamic weights based on content age (Recency Decay)"""
+        """Dynamic weights based on content age (Recency Decay).
+        youtube + reddit + imdb always sum to 1.0.
+        When reddit data is absent the caller uses youtube + imdb only,
+        scaling them back to 1.0 proportionally.
+        """
         current_year = datetime.now().year
         age = current_year - release_year if release_year else 10
-        
+
         if age <= 1:
-            return {'youtube': 0.65, 'imdb': 0.35}
+            return {'youtube': 0.45, 'reddit': 0.20, 'imdb': 0.35}
         elif age <= 3:
-            return {'youtube': 0.50, 'imdb': 0.50}
+            return {'youtube': 0.35, 'reddit': 0.15, 'imdb': 0.50}
         elif age <= 5:
-            return {'youtube': 0.40, 'imdb': 0.60}
+            return {'youtube': 0.28, 'reddit': 0.12, 'imdb': 0.60}
         else:
-            return {'youtube': 0.30, 'imdb': 0.70}
+            return {'youtube': 0.21, 'reddit': 0.09, 'imdb': 0.70}
     
     @staticmethod
     def get_category(release_year: int) -> str:
@@ -3076,11 +2731,14 @@ class ScoreComputer:
             weights    = self.scoring.get_dynamic_weights(content.get('release_year'))
 
             if red_reviews:
-                final_score = (weights['youtube'] * 0.5 * yt_score +
-                               weights['youtube'] * 0.5 * red_score +
-                               weights['imdb'] * imdb_score)
+                final_score = (weights['youtube'] * yt_score +
+                               weights['reddit'] * red_score +
+                               weights['imdb']   * imdb_score)
             else:
-                final_score = weights['youtube'] * yt_score + weights['imdb'] * imdb_score
+                # No reddit data — rescale youtube and imdb proportionally to sum to 1.0
+                yt_w   = weights['youtube'] / (weights['youtube'] + weights['imdb'])
+                imdb_w = weights['imdb']    / (weights['youtube'] + weights['imdb'])
+                final_score = yt_w * yt_score + imdb_w * imdb_score
 
             sentiments   = [r['sentiment'] for r in reviews]
             imdb_val     = content.get('imdb_rating') or 0
