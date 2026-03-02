@@ -5,13 +5,27 @@ Import from here instead of duplicating in each file.
 
 # ── Platform config ───────────────────────────────────────────────────────────
 
-# TMDb provider IDs for India
+# TMDb provider IDs for India (used by fetch_full_catalog, streaming_tracker)
 PLATFORMS = {
     'Netflix':     8,
     'Prime Video': 119,
     'Apple TV+':   350,
     'Jiohotstar':  2336,
 }
+
+# JustWatch shortName → (display name, fallback URL)
+# Used by watchlist_alerts and fetch_hindi_dubs
+JUSTWATCH_PLATFORM_MAP = {
+    'nfx':  ('Netflix',      'https://www.netflix.com'),
+    'prv':  ('Prime Video',  'https://www.primevideo.com'),
+    'hst':  ('Jiohotstar',   'https://www.jiohotstar.com'),
+    'atp':  ('Apple TV+',    'https://tv.apple.com'),
+    'mxs':  ('Max',          'https://www.max.com'),
+    'dnp':  ('Disney+',      'https://www.disneyplus.com'),
+}
+
+# Priority order for JustWatch offer selection (most preferred first)
+JUSTWATCH_PRIORITY = ['nfx', 'prv', 'hst', 'atp', 'mxs', 'dnp']
 
 # ── Movie genre IDs → our label ───────────────────────────────────────────────
 

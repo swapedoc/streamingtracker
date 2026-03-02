@@ -27,6 +27,85 @@ CREATE INDEX IF NOT EXISTS idx_discover_category ON discover_content(category);
 CREATE INDEX IF NOT EXISTS idx_discover_platform ON discover_content(platform);
 CREATE INDEX IF NOT EXISTS idx_discover_genre ON discover_content(genre);
 
+-- ── Watch Now content table ──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS content (
+    id               BIGSERIAL PRIMARY KEY,
+    tmdb_id          INTEGER NOT NULL UNIQUE,
+    title            TEXT NOT NULL,
+    original_title   TEXT,
+    platform         TEXT NOT NULL,
+    content_type     TEXT NOT NULL,             -- 'movie' | 'tv'
+    release_year     INTEGER,
+    imdb_rating      FLOAT,
+    poster_path      TEXT,
+    overview         TEXT,
+    discovery_source TEXT,                       -- 'trending' | 'catalog' etc.
+    genre            TEXT,
+    tv_genre         TEXT,
+    stream_url       TEXT,
+    created_at       TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_platform ON content(platform);
+CREATE INDEX IF NOT EXISTS idx_content_type     ON content(content_type);
+
+-- ── Reviews table ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS reviews (
+    id                 BIGSERIAL PRIMARY KEY,
+    content_id         BIGINT NOT NULL REFERENCES content(id) ON DELETE CASCADE,
+    source             TEXT NOT NULL,            -- 'youtube' | 'reddit' | 'rotten_tomatoes' etc.
+    source_id          TEXT NOT NULL,
+    source_url         TEXT,
+    reviewer           TEXT,
+    review_text        TEXT,
+    sentiment          INTEGER,                  -- -1 | 0 | 1
+    confidence         FLOAT,
+    weighted_sentiment FLOAT,
+    created_at         TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(source, source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reviews_content_id ON reviews(content_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_source      ON reviews(source);
+
+-- ── Scores table ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS scores (
+    id               BIGSERIAL PRIMARY KEY,
+    content_id       BIGINT NOT NULL UNIQUE REFERENCES content(id) ON DELETE CASCADE,
+    youtube_score    FLOAT,
+    reddit_score     FLOAT,
+    imdb_score       FLOAT,
+    engagement_score FLOAT DEFAULT 0.0,
+    final_score      FLOAT,
+    label            TEXT,
+    category         TEXT,
+    review_count     INTEGER DEFAULT 0,
+    positive_ratio   FLOAT,
+    is_polarizing    BOOLEAN DEFAULT FALSE,
+    sentiment_std    FLOAT,
+    vibe_score       FLOAT,                      -- 1.0–10.0 genre-specific intensity
+    vibe_label       TEXT,                       -- e.g. 'Scare Factor', 'Laugh Meter'
+    created_at       TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scores_final_score ON scores(final_score DESC);
+
+-- ── Watchlist table ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS watchlist (
+    id               BIGSERIAL PRIMARY KEY,
+    browser_id       TEXT NOT NULL,              -- anonymous browser fingerprint
+    title            TEXT NOT NULL,
+    content_type     TEXT,                       -- 'movie' | 'tv'
+    platform         TEXT,                       -- NULL until streaming is confirmed
+    stream_url       TEXT,
+    notified         BOOLEAN DEFAULT FALSE,
+    telegram_chat_id TEXT,                       -- user's personal Telegram chat ID
+    created_at       TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_browser_id ON watchlist(browser_id);
+CREATE INDEX IF NOT EXISTS idx_watchlist_notified   ON watchlist(notified);
+
 -- ── Binge Time + Trailer columns (run once) ───────────────────────────────────
 ALTER TABLE content          ADD COLUMN IF NOT EXISTS runtime          INTEGER;  -- minutes (movies)
 ALTER TABLE content          ADD COLUMN IF NOT EXISTS seasons          INTEGER;  -- TV only
@@ -45,10 +124,6 @@ ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS trailer_id       TEXT;
 -- NULL = no expiry date reported by JustWatch (does NOT mean it's staying forever).
 ALTER TABLE content          ADD COLUMN IF NOT EXISTS leaving_date DATE;
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS leaving_date DATE;
-
--- ── Vibe Score columns (run once) ────────────────────────────────────────────
-ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_score FLOAT;   -- 1.0 to 10.0
-ALTER TABLE scores ADD COLUMN IF NOT EXISTS vibe_label TEXT;    -- e.g. "Scare Factor", "Laugh Meter"
 
 -- ── Full review text (run once) ───────────────────────────────────────────────
 -- review_text was previously truncated to 800-1000 chars before saving.

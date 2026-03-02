@@ -35,6 +35,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from supabase import create_client
+from constants import JUSTWATCH_PLATFORM_MAP, JUSTWATCH_PRIORITY
 
 load_dotenv()
 
@@ -82,17 +83,8 @@ query GetOffers($nodeId: ID!, $country: Country!) {
 }
 """
 
-# ── Package → readable name ──────────────────────────────────────────────────
-
-PLATFORM_MAP = {
-    'nfx':  ('Netflix',      'https://www.netflix.com'),
-    'prv':  ('Prime Video',  'https://www.primevideo.com'),
-    'hst':  ('Jiohotstar',   'https://www.jiohotstar.com'),
-    'atp':  ('Apple TV+',    'https://tv.apple.com'),
-    'jic':  ('JioCinema',    'https://www.jiocinema.com'),
-    'mxs':  ('Max',          'https://www.max.com'),
-    'dnp':  ('Disney+',      'https://www.disneyplus.com'),
-}
+# ── Package → readable name — imported from constants.py ────────────────────
+PLATFORM_MAP = JUSTWATCH_PLATFORM_MAP
 
 # ── Thread-local HTTP session ────────────────────────────────────────────────
 
@@ -177,7 +169,7 @@ def check_streaming(title: str, content_type: str):
         return None, None
 
     # Prefer known major platforms in priority order
-    priority = ['nfx', 'prv', 'hst', 'atp', 'jic', 'mxs', 'dnp']
+    priority = JUSTWATCH_PRIORITY
     best = None
     for short in priority:
         for o in offers:
