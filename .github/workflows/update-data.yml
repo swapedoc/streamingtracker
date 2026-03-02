@@ -69,9 +69,9 @@ jobs:
           REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
         run: |
           if [[ "${{ inputs.mode }}" == "discover-only" ]]; then
-            python3 streaming_tracker_v3.py --discover-only
+            python3 streaming_tracker.py --discover-only
           else
-            python3 streaming_tracker_v3.py
+            python3 streaming_tracker.py
           fi
       # ── Sunday only: fetch Hindi dubs ───────────────────────────────────
       - name: Fetch Hindi dubs
