@@ -9,7 +9,6 @@ import asyncio
 import json
 import requests
 import numpy as np
-import feedparser
 import urllib.parse
 import threading
 import sys
@@ -113,10 +112,17 @@ class Config:
     DISCOVER_ENABLED_GENRES = ['Action', 'Horror', 'Thriller', 'Comedy', 'Drama' ,'Romance', 'Sci-Fi']
     DISCOVER_INDIAN_LIMIT = 120
     
-    # Indian languages for TMDb filtering (Hindi only)
-    INDIAN_LANGUAGES = ['hi']
+    # All Indian languages — used by DiscoverFlow to categorise content as 'indian'.
+    # Broad set so Tamil, Telugu, Malayalam etc. blockbusters appear in Discover
+    # (many have Hindi dubs and are perfectly watchable via the Hindi dub filter).
+    INDIAN_LANGUAGES = {'hi', 'ta', 'te', 'ml', 'kn', 'bn', 'mr', 'pa'}
+
+    # Watch Now trending fetch is explicitly Hindi-only — non-Hindi content
+    # without a dub isn't useful in the scored/reviewed Watch Now feed.
+    WATCH_NOW_LANGUAGES = ['hi']
     INDIAN_LANGUAGE_NAMES = {
-        'hi': 'Hindi'
+        'hi': 'Hindi', 'ta': 'Tamil', 'te': 'Telugu', 'ml': 'Malayalam',
+        'kn': 'Kannada', 'bn': 'Bengali', 'mr': 'Marathi', 'pa': 'Punjabi',
     }
     
     USE_TRANSCRIPTS = False   # transcripts too slow; title+desc is fast & nearly as good
@@ -142,6 +148,15 @@ class TMDbResolver:
             allowed_methods=["GET"],
         )
         self._session.mount("https://", HTTPAdapter(max_retries=retry, pool_maxsize=10))
+
+        # Build genre_id → label lookup once at construction — avoids lazy-init
+        # TOCTOU race when multiple threads call _resolve_genre simultaneously.
+        self._id_to_genre: Dict[int, str] = {}
+        for label, gid in Config.GENRES.items():
+            if '_tv' not in label:
+                self._id_to_genre[gid] = label
+        for gid, label in self._TV_GENRE_MAP.items():
+            self._id_to_genre[gid] = label
     
     def get_trending(self, media_type='all', time_window='week', limit=20) -> List[Dict]:
         """Get trending content from TMDb — supports multi-page fetching for limit > 20"""
@@ -210,7 +225,10 @@ class TMDbResolver:
     
     def get_trending_indian(self, media_type='movie', limit=20) -> List[Dict]:
         """
-        Get genuinely trending Hindi content.
+        Get genuinely trending Hindi content for the Watch Now feed.
+        Intentionally Hindi-only (original_language=hi) — Watch Now is a scored,
+        reviewed feed and non-Hindi content without a dub isn't useful there.
+        Use DiscoverFlow for the full Indian-language catalog (all 8 languages).
         Step 1: Pull from /trending/week filtered to original_language=hi (truly trending this week).
         Step 2: Top up via /discover with a 2-year recency cap so old evergreen titles
                 like PK, Dangal etc. never appear in the Watch Now list.
@@ -399,28 +417,17 @@ class TMDbResolver:
         'Soap', 'War & Politics', 'Western',
     ]
 
-    # Reverse lookup: TMDb genre_id -> our movie-style label (populated lazily)
-    _ID_TO_GENRE: Dict[int, str] = {}
-
     def _resolve_genre(self, genre_ids: list, fallback: Optional[str] = None) -> Optional[str]:
         """
         Returns a movie-style genre label (Horror, Action, Sci-Fi etc.)
         Works for both movies and TV — TV IDs are mapped via _TV_GENRE_MAP.
         """
-        if not self._ID_TO_GENRE:
-            for label, gid in Config.GENRES.items():
-                if '_tv' not in label:
-                    TMDbResolver._ID_TO_GENRE[gid] = label
-            for gid, label in self._TV_GENRE_MAP.items():
-                TMDbResolver._ID_TO_GENRE[gid] = label
-
-        matched = [self._ID_TO_GENRE[gid] for gid in (genre_ids or [])
-                   if gid in self._ID_TO_GENRE]
+        matched = [self._id_to_genre[gid] for gid in (genre_ids or [])
+                   if gid in self._id_to_genre]
         if not matched:
             return fallback
 
-        seen = set()
-        matched = [x for x in matched if not (x in seen or seen.add(x))]
+        matched = list(dict.fromkeys(matched))  # deduplicate, preserve order
 
         for preferred in self._GENRE_PRIORITY:
             if preferred in matched:
@@ -438,8 +445,7 @@ class TMDbResolver:
         if not matched:
             return None
 
-        seen = set()
-        matched = [x for x in matched if not (x in seen or seen.add(x))]
+        matched = list(dict.fromkeys(matched))  # deduplicate, preserve order
 
         for preferred in self._TV_GENRE_PRIORITY:
             if preferred in matched:
@@ -749,23 +755,27 @@ class DiscoverFlow:
                              'category': 'underdog', 'genre': None})
 
         # ── Indian / Hindi ─────────────────────────────────────────────────
+        # Fetch all Indian-language content for Discover. Users can then filter
+        # by Hindi dub to narrow to what's actually watchable without subtitles.
         min_date = f"{datetime.now().year - 3}-01-01"
-        for mt in ['movie', 'tv']:
-            base = {
-                'api_key': self.api_key,
-                'with_original_language': 'hi',
-                'sort_by': 'popularity.desc',
-                'vote_count.gte': 20,
-                'with_watch_providers': '8|119|350|2336|220',
-                'watch_region': 'IN',
-            }
-            if mt == 'movie':
-                base['primary_release_date.gte'] = min_date
-            else:
-                base['air_date.gte'] = min_date
-            for page in range(1, PAGES_PER_TYPE + 1):
-                jobs.append({'mt': mt, 'params': {**base, 'page': page},
-                             'category': 'indian', 'genre': 'Hindi'})
+        for lang in Config.INDIAN_LANGUAGES:
+            for mt in ['movie', 'tv']:
+                base = {
+                    'api_key': self.api_key,
+                    'with_original_language': lang,
+                    'sort_by': 'popularity.desc',
+                    'vote_count.gte': 20,
+                    'with_watch_providers': '8|119|350|2336|220',
+                    'watch_region': 'IN',
+                }
+                if mt == 'movie':
+                    base['primary_release_date.gte'] = min_date
+                else:
+                    base['air_date.gte'] = min_date
+                for page in range(1, PAGES_PER_TYPE + 1):
+                    jobs.append({'mt': mt, 'params': {**base, 'page': page},
+                                 'category': 'indian', 'genre': 'Hindi',
+                                 'language': lang})
 
         return jobs
 
@@ -812,7 +822,7 @@ class DiscoverFlow:
                                 'tv_genre': resolved_tv_genre,
                             }
                             if job['category'] == 'indian':
-                                parsed['language'] = 'hi'
+                                parsed['language'] = item.get('original_language') or job.get('language', 'hi')
                             items.append(parsed)
                         return items
                 except Exception as e:
@@ -1330,6 +1340,7 @@ class RedditIngester:
     # OAuth2 authenticated — 998 req/window vs 10 unauthenticated.
     # Token is fetched once per process and reused (expires in 24h).
     _rate_lock = threading.Lock()
+    _token_lock = threading.Lock()          # guards _oauth_token + _token_expires_at
     _last_call_time: float = 0.0
     _oauth_token: Optional[str] = None          # shared across all instances
     _token_expires_at: float = 0.0
@@ -1390,43 +1401,50 @@ class RedditIngester:
         Fetch a Reddit OAuth2 token using client_credentials grant.
         Result is cached at the class level so it's fetched once per run,
         not once per title. Token is valid for 24h (86400s).
+        Thread-safe via double-checked locking on _token_lock.
         """
-        # Return cached token if still valid (with 60s buffer)
+        # Fast path — token already valid, no lock needed
         if cls._oauth_token and time.time() < cls._token_expires_at - 60:
             return cls._oauth_token
 
-        client_id     = os.getenv('REDDIT_CLIENT_ID')
-        client_secret = os.getenv('REDDIT_CLIENT_SECRET')
-        username      = os.getenv('REDDIT_USERNAME', '')
-        password      = os.getenv('REDDIT_PASSWORD', '')
-
-        if not client_id or not client_secret:
-            return None
-
-        ua = 'python:streamiq.scraper:v1.0 (by /u/stream_tracker_bot)'
-        payload = (
-            {'grant_type': 'password', 'username': username, 'password': password}
-            if username and password
-            else {'grant_type': 'client_credentials'}
-        )
-        try:
-            r = requests.post(
-                cls._TOKEN_URL,
-                data=payload,
-                auth=(client_id, client_secret),
-                headers={'User-Agent': ua},
-                timeout=10,
-            )
-            if r.status_code == 200 and 'access_token' in r.json():
-                data = r.json()
-                cls._oauth_token      = data['access_token']
-                cls._token_expires_at = time.time() + data.get('expires_in', 86400)
+        # Slow path — acquire lock then re-check in case another thread
+        # already refreshed the token while we were waiting
+        with cls._token_lock:
+            if cls._oauth_token and time.time() < cls._token_expires_at - 60:
                 return cls._oauth_token
-            else:
-                print(f"   ⚠️  Reddit token fetch failed: HTTP {r.status_code} — {r.text[:100]}")
-        except Exception as e:
-            print(f"   ⚠️  Reddit token fetch error: {e}")
-        return None
+
+            client_id     = os.getenv('REDDIT_CLIENT_ID')
+            client_secret = os.getenv('REDDIT_CLIENT_SECRET')
+            username      = os.getenv('REDDIT_USERNAME', '')
+            password      = os.getenv('REDDIT_PASSWORD', '')
+
+            if not client_id or not client_secret:
+                return None
+
+            ua = 'python:streamiq.scraper:v1.0 (by /u/stream_tracker_bot)'
+            payload = (
+                {'grant_type': 'password', 'username': username, 'password': password}
+                if username and password
+                else {'grant_type': 'client_credentials'}
+            )
+            try:
+                r = requests.post(
+                    cls._TOKEN_URL,
+                    data=payload,
+                    auth=(client_id, client_secret),
+                    headers={'User-Agent': ua},
+                    timeout=10,
+                )
+                if r.status_code == 200 and 'access_token' in r.json():
+                    data = r.json()
+                    cls._oauth_token      = data['access_token']
+                    cls._token_expires_at = time.time() + data.get('expires_in', 86400)
+                    return cls._oauth_token
+                else:
+                    print(f"   ⚠️  Reddit token fetch failed: HTTP {r.status_code} — {r.text[:100]}")
+            except Exception as e:
+                print(f"   ⚠️  Reddit token fetch error: {e}")
+            return None
 
     def _api_url(self, path: str) -> str:
         """
@@ -2189,459 +2207,6 @@ class ScoringEngine:
             return "🤷 Genre Fans Only"
         return "💤 Skip"
 
-# ============================================================================
-# YOUTUBE INGESTER
-# ============================================================================
-
-class YouTubeIngester:
-    def __init__(self):
-        self.api_key = Config.YOUTUBE_API_KEY
-        self.base_url = "https://www.googleapis.com/youtube/v3"
-        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        self.tmdb = TMDbResolver()
-        self.sentiment = SentimentAnalyzer()
-        self.scoring = ScoringEngine()
-        self.reddit = RedditIngester() if Config.USE_REDDIT else None
-        self.critic = CriticReviewScraper()
-    
-    def search_videos(self, query: str, max_results: int = 5) -> List[Dict]:
-        try:
-            response = requests.get(
-                f"{self.base_url}/search",
-                params={
-                    'part': 'snippet',
-                    'q': query,
-                    'type': 'video',
-                    'maxResults': max_results,
-                    'key': self.api_key,
-                    'order': 'relevance'
-                },
-                timeout=30
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            return [{
-                'video_id': item['id']['videoId'],
-                'title': item['snippet']['title'],
-                'description': item['snippet']['description'],
-                'channel': item['snippet']['channelTitle'],
-                'channel_id': item['snippet']['channelId']
-            } for item in data.get('items', [])]
-        except Exception as e:
-            print(f"❌ YouTube search error: {e}")
-            return []
-    
-    def get_video_stats(self, video_id: str, channel_id: str) -> Dict:
-        try:
-            response = requests.get(
-                f"{self.base_url}/videos",
-                params={'part': 'statistics', 'id': video_id, 'key': self.api_key},
-                timeout=10
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data.get('items'):
-                return {}
-            
-            stats = data['items'][0]['statistics']
-            
-            time.sleep(0.5)
-            channel_response = requests.get(
-                f"{self.base_url}/channels",
-                params={'part': 'statistics', 'id': channel_id, 'key': self.api_key},
-                timeout=10
-            )
-            channel_response.raise_for_status()
-            channel_data = channel_response.json()
-            
-            subscribers = 0
-            if channel_data.get('items'):
-                subscribers = int(channel_data['items'][0]['statistics'].get('subscriberCount', 0))
-            
-            return {
-                'views': int(stats.get('viewCount', 0)),
-                'likes': int(stats.get('likeCount', 0)),
-                'comments': int(stats.get('commentCount', 0)),
-                'subscribers': subscribers
-            }
-        except Exception as e:
-            print(f"  ⚡️ Stats error: {e}")
-            return {}
-    
-    def get_transcript(self, video_id: str) -> Optional[str]:
-        if not Config.USE_TRANSCRIPTS:
-            return None
-        
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            transcript_text = ' '.join([entry['text'] for entry in transcript_list])
-            return transcript_text[:4000]
-        except Exception:
-            return None  # transcripts are optional — failure is expected
-    
-    def process_trending_content(self, trending_data: Dict, platform: str, platform_id: int):
-        title = trending_data['title']
-        tmdb_id = trending_data['tmdb_id']
-        media_type = trending_data['content_type']
-        
-        print(f"\n🎬 {title} ({media_type})")
-        
-        providers = self.tmdb.get_watch_providers(tmdb_id, media_type)
-        
-        if not providers or platform_id not in providers:
-            print(f"   ⚡️ Not available on {platform}, skipping for accuracy")
-            return
-        
-        print(f"   ✅ Confirmed on {platform}")
-        
-        # For Hindi content, search with Hindi keyword for more relevant reviews
-        if trending_data.get('is_indian'):
-            query = f"{title} Hindi review {platform}"
-        else:
-            query = f"{title} {platform} review"
-        
-        print(f"   🔍 Searching: {query}")
-        
-        videos = self.search_videos(query, max_results=2)
-        
-        if not videos:
-            print(f"   ⚡️ No videos found")
-            return
-        
-        content_data = {
-            'tmdb_id': tmdb_id,
-            'title': title,
-            'original_title': trending_data['original_title'],
-            'platform': platform,
-            'content_type': media_type,
-            'release_year': trending_data['release_year'],
-            'imdb_rating': trending_data['imdb_rating'],
-            'poster_path': trending_data['poster_path'],
-            'overview': trending_data['overview'],
-            'discovery_source': trending_data.get('category', 'trending'),
-            'genre': trending_data.get('genre'),
-            'tv_genre': trending_data.get('tv_genre'),
-        }
-        
-        try:
-            content_result = self.db.table('content').upsert(content_data, on_conflict='tmdb_id').execute()
-            content_id = content_result.data[0]['id']
-        except Exception as e:
-            print(f"   ❌ DB error: {e}")
-            return
-        
-        # ── YouTube: process videos sequentially (same API key, rate sensitive)
-        for video in videos:
-            print(f"     📺 {video['title'][:50]}...")
-            stats = self.get_video_stats(video['video_id'], video['channel_id'])
-            if not stats:
-                continue
-            transcript = self.get_transcript(video['video_id'])
-            if transcript:
-                review_text = transcript
-                print(f"     📝 Transcript ({len(transcript)} chars)")
-            else:
-                review_text = f"{video['title']} {video['description']}"
-                print(f"     📝 Title + description")
-            sentiment_result = self.sentiment.analyze(review_text)
-            print(f"     💭 Sentiment: {sentiment_result['sentiment']} (conf: {sentiment_result['confidence']:.2f})")
-            youtube_weight = self.scoring.youtube_weight(
-                stats.get('views', 0), stats.get('subscribers', 0), stats.get('comments', 0)
-            )
-            weighted_sentiment = sentiment_result['sentiment'] * sentiment_result['confidence'] * youtube_weight
-            review_data = {
-                'content_id': content_id,
-                'source': 'youtube',
-                'source_url': f"https://youtube.com/watch?v={video['video_id']}",
-                'source_id': video['video_id'],
-                'reviewer': video['channel'],
-                'reviewer_subscribers': stats.get('subscribers', 0),
-                'review_text': review_text,
-                'sentiment': sentiment_result['sentiment'],
-                'confidence': sentiment_result['confidence'],
-                'views': stats.get('views', 0),
-                'likes': stats.get('likes', 0),
-                'comments_count': stats.get('comments', 0),
-                'youtube_weight': youtube_weight,
-                'weighted_sentiment': weighted_sentiment
-            }
-            try:
-                self.db.table('reviews').upsert(review_data, on_conflict='source,source_id').execute()
-                print(f"     💾 Saved")
-            except Exception as e:
-                print(f"     ❌ DB error: {e}")
-            time.sleep(0.2)  # reduced from 0.5
-
-        # ── Reddit + TMDb reviews + Critics run CONCURRENTLY (all hit different servers)
-        is_hindi = trending_data.get('is_indian', False)
-
-        def run_reddit():
-            if not self.reddit:
-                return
-            print(f"   📡 Reddit...", flush=True)
-            threads = self.reddit.get_reddit_discussions(title, media_type, is_hindi=is_hindi)
-            if threads:
-                score = self.reddit.compute_reddit_score(threads)
-                print(f"   📊 Reddit: {score:.1f} ({len(threads)} threads)")
-                self.reddit.save_reddit_reviews(content_id, threads)
-            else:
-                print(f"   ⚡️ Reddit: no discussions found")
-
-        def run_tmdb_reviews():
-            self._fetch_tmdb_reviews(content_id, tmdb_id, media_type)
-
-        def run_critics():
-            # RT via scraping only — Decider/Metacritic/BollywoodHungama removed for speed
-            count = self.critic.fetch_all(content_id, title, media_type,
-                                          year=trending_data.get('release_year'),
-                                          is_hindi=is_hindi)
-            if count == 0:
-                print(f"   ⚡️ Critics: no scraper reviews found")
-
-        print(f"   🔀 Running Reddit + TMDb reviews + Critics in parallel...")
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            futures = [ex.submit(run_reddit), ex.submit(run_tmdb_reviews), ex.submit(run_critics)]
-            for f in as_completed(futures):
-                try:
-                    f.result()
-                except Exception as e:
-                    print(f"   ❌ Parallel task error: {str(e)[:80]}")
-    
-    def _fetch_decider_youtube(self, content_id: int, title: str):
-        """
-        Fetch Decider's 'Stream It or Skip It' verdict via YouTube search.
-        Decider posts these as YouTube videos — verdict is in the video title itself.
-        No scraping needed, uses the existing YouTube API key.
-        """
-        query = f'"{title}" "stream it or skip it" decider'
-        try:
-            response = requests.get(
-                f"{self.base_url}/search",
-                params={
-                    'part': 'snippet',
-                    'q': query,
-                    'type': 'video',
-                    'maxResults': 3,
-                    'key': self.api_key,
-                    'order': 'relevance'
-                },
-                timeout=15
-            )
-            response.raise_for_status()
-            items = response.json().get('items', [])
-        except Exception as e:
-            print(f"   ⚡️ Decider YouTube search error: {e}")
-            return
-
-        for item in items:
-            video_title = item['snippet']['title']
-            description = item['snippet']['description']
-            channel = item['snippet']['channelTitle']
-            video_id = item['id']['videoId']
-
-            # Must be from Decider's own channel and contain the verdict phrase
-            if 'decider' not in channel.lower() and 'decider' not in video_title.lower():
-                continue
-
-            title_upper = video_title.upper()
-            if 'STREAM IT' in title_upper:
-                verdict, sentiment, confidence = 'Stream It', 1, 0.95
-            elif 'SKIP IT' in title_upper:
-                verdict, sentiment, confidence = 'Skip It', -1, 0.95
-            elif 'SOME STREAMS' in title_upper:
-                verdict, sentiment, confidence = 'Some Streams', 0, 0.80
-            else:
-                continue  # Not a verdict video
-
-            review_data = {
-                'content_id':        content_id,
-                'source':            'decider',
-                'source_url':        f"https://youtube.com/watch?v={video_id}",
-                'source_id':         f"decider_{video_id}",
-                'reviewer':          'Decider',
-                'review_text':       f"{verdict} — {video_title}",
-                'sentiment':         sentiment,
-                'confidence':        confidence,
-                'weighted_sentiment': sentiment * confidence,
-            }
-            try:
-                self.db.table('reviews').upsert(review_data, on_conflict='source,source_id').execute()
-                icon = '👍' if sentiment == 1 else '👎' if sentiment == -1 else '🤷'
-                print(f"   📰 Decider (YouTube): {verdict} {icon}")
-            except Exception as e:
-                print(f"   ❌ Decider save error: {e}")
-            return  # Only need the first matching verdict
-
-    def _fetch_tmdb_reviews(self, content_id: int, tmdb_id: int, media_type: str):
-        """Fetch user reviews from TMDB — free, no extra API key needed"""
-        try:
-            resp = requests.get(
-                f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/reviews",
-                params={'api_key': self.tmdb.api_key, 'language': 'en-US', 'page': 1},
-                timeout=10
-            )
-            if resp.status_code != 200:
-                return
-            reviews = resp.json().get('results', [])[:8]  # up to 8 reviews
-            if not reviews:
-                return
-
-            count = 0
-            for review in reviews:
-                text = review.get('content', '')
-                if len(text) < 50:
-                    continue
-                author = review.get('author', 'TMDb User')
-                review_id = review.get('id', '')
-                rating = review.get('author_details', {}).get('rating')
-
-                # Use rating as sentiment hint if available (1-10 scale)
-                if rating is not None:
-                    if rating >= 7:
-                        sent = {'sentiment': 1, 'confidence': min(1.0, (rating - 5) / 5)}
-                    elif rating <= 4:
-                        sent = {'sentiment': -1, 'confidence': min(1.0, (5 - rating) / 5)}
-                    else:
-                        sent = {'sentiment': 0, 'confidence': 0.3}
-                else:
-                    sent = self.sentiment.analyze(text[:1000])
-
-                review_data = {
-                    'content_id': content_id,
-                    'source': 'tmdb',
-                    'source_url': review.get('url', ''),
-                    'source_id': f"tmdb_{review_id}",
-                    'reviewer': author,
-                    'review_text': text,
-                    'sentiment': sent['sentiment'],
-                    'confidence': sent['confidence'],
-                    'weighted_sentiment': sent['sentiment'] * sent['confidence']
-                }
-                try:
-                    self.db.table('reviews').upsert(review_data, on_conflict='source,source_id').execute()
-                    count += 1
-                except Exception as e:
-                    print(f"   ⚡️ TMDb review DB save error: {e}")
-
-            if count:
-                print(f"   📝 Saved {count} TMDb reviews")
-        except Exception as e:
-            print(f"   ⚡️ TMDb reviews error: {e}")
-
-    def run(self):
-        print("\n" + "="*70)
-        print("🚀 WATCH NOW FLOW - Processing Trending with Reviews")
-        print("="*70)
-        
-        # Get global trending content
-        spinner = Spinner("Fetching global trending").start()
-        trending_all = self.tmdb.get_trending('all', 'week', limit=Config.WATCH_NOW_TRENDING_LIMIT)
-        spinner.stop(f"Global trending: {len(trending_all)} titles")
-        
-        # Get Hindi trending content and merge
-        spinner = Spinner("Fetching Hindi trending").start()
-        indian_trending = []
-        for media_type in ['movie', 'tv']:
-            indian_trending.extend(self.tmdb.get_trending_indian(media_type, limit=20))
-        spinner.stop(f"Hindi trending: {len(indian_trending)} titles")
-        
-        # Interleave Hindi titles into global list so they aren't pushed past the per-platform cap.
-        # Pattern: every 3rd slot gets a Hindi title → guarantees ~3 Hindi per 10 processed.
-        seen_ids = {item['tmdb_id'] for item in trending_all}
-        unique_hindi = [i for i in indian_trending if i['tmdb_id'] not in seen_ids]
-        
-        interleaved = []
-        hindi_iter = iter(unique_hindi)
-        hindi_slot = 3  # insert a Hindi title every N global titles
-        hi_count = 0
-        for i, item in enumerate(trending_all):
-            interleaved.append(item)
-            if (i + 1) % hindi_slot == 0:
-                try:
-                    interleaved.append(next(hindi_iter))
-                    hi_count += 1
-                except StopIteration:
-                    pass
-        # Append any remaining Hindi titles not yet inserted
-        for item in hindi_iter:
-            interleaved.append(item)
-            hi_count += 1
-        
-        trending_all = interleaved
-        print(f"\n📦 Total trending (global + Hindi): {len(trending_all)} titles ({hi_count} Hindi interleaved)")
-        
-        if not trending_all:
-            print("❌ No trending content discovered")
-            return
-        
-        processed = 0
-        platform_list = list(Config.PLATFORMS.items())
-        total_platforms = len(platform_list)
-
-        # Pre-fetch provider data ONCE per title (instead of once per platform = 5x speedup)
-        print(f"\n🔍 Pre-fetching provider availability for {len(trending_all)} titles...")
-        provider_cache = {}
-        for i, item in enumerate(trending_all):
-            progress(i + 1, len(trending_all), item['title'])
-            provider_cache[item['tmdb_id']] = self.tmdb.get_watch_providers(
-                item['tmdb_id'], item['content_type']
-            )
-        print()  # newline after progress bar
-
-        # Monkey-patch get_watch_providers to use cache during this run
-        original_get_providers = self.tmdb.get_watch_providers
-        def cached_get_providers(tmdb_id, media_type, retries=3):
-            if tmdb_id in provider_cache:
-                return provider_cache[tmdb_id]
-            return original_get_providers(tmdb_id, media_type, retries)
-        self.tmdb.get_watch_providers = cached_get_providers
-
-        # Skip platforms that have zero matches in the entire trending list — no point iterating
-        active_platforms = []
-        for platform, platform_id in platform_list:
-            matches = sum(1 for item in trending_all
-                         if platform_id in (provider_cache.get(item['tmdb_id']) or []))
-            if matches > 0:
-                active_platforms.append((platform, platform_id))
-                print(f"   ✅ {platform}: {matches} potential matches")
-            else:
-                print(f"   ⏭️  {platform}: 0 matches — skipping entirely")
-        print()
-
-        def process_platform(args):
-            platform, platform_id = args
-            idx = active_platforms.index(args) + 1
-            print(f"\n{'='*70}")
-            print(f"🎬 {platform.upper()} ({idx}/{len(active_platforms)} active platforms)")
-            print(f"{'='*70}")
-            confirmed = 0  # count only titles actually on this platform
-            # Only iterate titles we know are on this platform (from provider_cache)
-            platform_titles = [
-                item for item in trending_all
-                if platform_id in (provider_cache.get(item['tmdb_id']) or [])
-            ]
-            for i, content_item in enumerate(platform_titles):
-                if confirmed >= Config.WATCH_NOW_MAX_VIDEOS_PER_PLATFORM:
-                    break
-                print(f"   [{i+1}/{len(platform_titles)}] {content_item['title'][:40]}")
-                self.process_trending_content(content_item, platform, platform_id)
-                confirmed += 1
-            return confirmed
-
-        for platform, platform_id in active_platforms:
-            count = process_platform((platform, platform_id))
-            processed += count
-            print(f"   ✅ {platform} done — {count} items processed")
-        
-        # Restore original
-        self.tmdb.get_watch_providers = original_get_providers
-        
-        print("\n" + "="*70)
-        print(f"✅ WATCH NOW FLOW COMPLETE - {processed} items across {total_platforms} platforms")
-        print("="*70)
 
 # ============================================================================
 # SCORE COMPUTER
@@ -3505,19 +3070,46 @@ class JustWatchFetcher:
     }
     """
 
+    # Thread-local storage — one requests.Session per thread so concurrent
+    # workers in _fetch_and_update don't share a non-thread-safe session.
+    _local = threading.local()
+
+    # JustWatch request headers defined once — used by both _gql and _gql_threadsafe.
+    _HEADERS = {
+        'User-Agent':   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Content-Type': 'application/json',
+        'Origin':       'https://www.justwatch.com',
+        'Referer':      'https://www.justwatch.com/',
+    }
+
     def __init__(self):
         self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        # Single session for serial callers (_gql used by _find_stream_url etc.)
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent':   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-            'Content-Type': 'application/json',
-            'Origin':       'https://www.justwatch.com',
-            'Referer':      'https://www.justwatch.com/',
-        })
+        self.session.headers.update(self._HEADERS)
 
     def _gql(self, query, variables):
+        """GQL call using the shared session — for serial (non-threaded) use."""
         try:
             r = self.session.post(self.GQL, json={'query': query, 'variables': variables}, timeout=12)
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            if 'errors' in data:
+                return None
+            return data
+        except Exception as e:
+            print(f"   ⚡️ JustWatch GQL fetch error: {e}")
+            return None
+
+    def _gql_threadsafe(self, query, variables):
+        """GQL call using a per-thread session — safe to call from a ThreadPoolExecutor."""
+        if not hasattr(self._local, 'session'):
+            s = requests.Session()
+            s.headers.update(self._HEADERS)
+            self._local.session = s
+        try:
+            r = self._local.session.post(self.GQL, json={'query': query, 'variables': variables}, timeout=12)
             if r.status_code != 200:
                 return None
             data = r.json()
@@ -3572,50 +3164,27 @@ class JustWatchFetcher:
 
     def _fetch_and_update(self, rows, table_name):
         """Fetch JustWatch URLs concurrently and update the table."""
-        import threading
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         updated = 0
         lock = threading.Lock()
-        _local = threading.local()
-
-        def get_session():
-            if not hasattr(_local, 'session'):
-                import requests as _req
-                s = _req.Session()
-                s.headers.update({
-                    'User-Agent':   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-                    'Content-Type': 'application/json',
-                    'Origin':       'https://www.justwatch.com',
-                    'Referer':      'https://www.justwatch.com/',
-                })
-                _local.session = s
-            return _local.session
-
-        def _gql_local(query, variables):
-            try:
-                r = get_session().post(self.GQL, json={'query': query, 'variables': variables}, timeout=12)
-                if r.status_code != 200: return None
-                data = r.json()
-                if 'errors' in data: return None
-                return data
-            except Exception as e:
-                print(f"   ⚡️ JustWatch URL fetch error: {e}")
-                return None
 
         def find_url(item):
             title      = item['title']
             media_type = item['content_type']
             platform   = item['platform']
-            data = _gql_local(self.SEARCH_Q, {'searchQuery': title, 'country': 'IN', 'first': 8})
-            if not data: return item, None, None
+
+            data = self._gql_threadsafe(self.SEARCH_Q, {'searchQuery': title, 'country': 'IN', 'first': 8})
+            if not data:
+                return item, None, None
+
             edges = data.get('data', {}).get('popularTitles', {}).get('edges', [])
-            want = 'Movie' if media_type != 'tv' else 'Show'
+            want  = 'Movie' if media_type != 'tv' else 'Show'
             candidates = [e['node']['id'] for e in edges if e['node'].get('__typename') == want]
             fallback   = [e['node']['id'] for e in edges if e['node'].get('__typename') != want]
+
             for node_id in candidates + fallback:
-                od = _gql_local(self.OFFERS_Q, {'nodeId': node_id, 'country': 'IN'})
-                if not od: continue
+                od = self._gql_threadsafe(self.OFFERS_Q, {'nodeId': node_id, 'country': 'IN'})
+                if not od:
+                    continue
                 offers = (od.get('data', {}).get('node') or {}).get('offers', [])
                 seen = set()
                 for offer in offers:
@@ -3627,6 +3196,7 @@ class JustWatchFetcher:
                         leaving_date = valid_until[:10] if valid_until else None
                         return item, url, leaving_date
                     seen.add(plat)
+
             return item, None, None
 
         MAX_JW_WORKERS = 20  # conservative — avoids JustWatch throttling
@@ -3743,113 +3313,18 @@ class JustWatchFetcher:
 # MAIN - RUN BOTH FLOWS
 def embed_new_discover():
     """
-    Generate Gemini embeddings for any discover_content rows that don't have
-    one yet. Runs at the end of every tracker run so new titles are always
-    searchable via Vibe Search immediately.
+    Embed any discover_content rows missing a vector for Vibe Search.
+    Delegates entirely to generate_embeddings.run_incremental() — single
+    source of truth for batch size, rate limiting and retry logic.
     """
-    gemini_key = os.getenv('GEMINI_API_KEY')
-    if not gemini_key:
-        print("\n⚠️  GEMINI_API_KEY not set — skipping embedding step")
-        return
-
     try:
-        import requests as _req
-        import time as _time
+        import generate_embeddings
     except ImportError:
-        print("\n⚠️  requests not available — skipping embedding step")
+        print('\n⚠️  generate_embeddings.py not found — skipping embedding step')
         return
 
     db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-
-    # Fetch only rows missing embeddings — paginate past 1000-row limit
-    rows = []
-    offset = 0
-    while True:
-        batch = (
-            db.table('discover_content')
-            .select('id, title, genre, tv_genre, content_type, release_year, overview')
-            .is_('embedding', 'null')
-            .range(offset, offset + 999)
-            .execute()
-            .data or []
-        )
-        rows.extend(batch)
-        if len(batch) < 1000:
-            break
-        offset += 1000
-
-    if not rows:
-        print("\n✅ Embeddings: all discover titles already embedded")
-        return
-
-    BATCH_URL  = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents?key={gemini_key}"
-    BATCH_SIZE = 100    # Gemini max per batchEmbedContents call
-    MIN_WAIT   = 4.5    # seconds between calls (15 req/min free tier)
-    success = errors = 0
-
-    def _build_text(row):
-        parts = [f"Title: {row.get('title', '')}"]
-        if row.get('genre'):        parts.append(f"Genre: {row['genre']}")
-        if row.get('tv_genre'):     parts.append(f"Genre: {row['tv_genre']}")
-        if row.get('content_type'): parts.append(f"Type: {'Series' if row['content_type'] == 'tv' else 'Film'}")
-        if row.get('release_year'): parts.append(f"Year: {row['release_year']}")
-        if row.get('overview'):     parts.append(f"Synopsis: {str(row['overview'])[:400]}")
-        return '. '.join(parts)
-
-    batches = [rows[i:i+BATCH_SIZE] for i in range(0, len(rows), BATCH_SIZE)]
-    print(f"\n🔮 Embedding {len(rows)} title(s) in {len(batches)} batch call(s)...")
-
-    last_call = 0.0
-    for bidx, batch in enumerate(batches):
-        texts = [_build_text(r) for r in batch]
-
-        wait = MIN_WAIT - (_time.time() - last_call)
-        if wait > 0:
-            _time.sleep(wait)
-        last_call = _time.time()
-
-        embeddings = None
-        for attempt in range(5):
-            try:
-                r = _req.post(BATCH_URL, json={
-                    'requests': [
-                        {'model': 'models/gemini-embedding-001',
-                         'content': {'parts': [{'text': t}]}}
-                        for t in texts
-                    ]
-                }, timeout=60)
-                if r.status_code == 429:
-                    wait_s = min(60, 10 * (attempt + 1))
-                    print(f"   ⏳ Rate limited — waiting {wait_s}s...")
-                    _time.sleep(wait_s)
-                    continue
-                r.raise_for_status()
-                raw = r.json().get('embeddings', [])
-                if len(raw) != len(batch):
-                    print(f"   ⚠️  Got {len(raw)} embeddings for {len(batch)} titles — skipping batch")
-                    break
-                embeddings = [e['values'] for e in raw]
-                break
-            except Exception as e:
-                print(f"   ❌ Batch {bidx+1} attempt {attempt+1} error: {e}")
-                _time.sleep(3)
-
-        if embeddings is None:
-            errors += len(batch)
-            print(f"   ❌ Batch {bidx+1}/{len(batches)} failed — {len(batch)} titles skipped")
-            continue
-
-        for row, emb in zip(batch, embeddings):
-            try:
-                db.table('discover_content').update({'embedding': emb}).eq('id', row['id']).execute()
-                success += 1
-            except Exception as e:
-                errors += 1
-                print(f"   ⚠️  DB save failed '{row.get('title','?')}': {e}")
-
-        print(f"   ✅ Batch {bidx+1}/{len(batches)} done — {len(batch)} embedded ({success} total so far)")
-
-    print(f"   Embedded: {success}  Errors: {errors}")
+    generate_embeddings.run_incremental(db)
 
 
 def main():
@@ -3944,11 +3419,12 @@ def main():
     embed_new_discover()
 
     print("\n" + "="*70)
-    print("🎉 BOTH FLOWS COMPLETE!")
+    print("🎉 DONE!")
     print("="*70)
     print("\n📊 Summary:")
     print("   ✅ Discover content saved (with stream URLs)")
-    print("   ✅ Watch Now content scored (with reviews + stream URLs)")
+    if not args.discover_only:
+        print("   ✅ Watch Now content scored (with reviews + stream URLs)")
 
 if __name__ == "__main__":
     main()

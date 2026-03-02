@@ -86,6 +86,60 @@ def fetch_rows(db, force: bool) -> list:
     return rows
 
 
+def run_incremental(db) -> tuple[int, int]:
+    """
+    Embed any discover_content rows that are missing an embedding.
+    Designed to be called from streaming_tracker.py at the end of each run
+    so new titles are immediately searchable via Vibe Search.
+
+    Returns (success_count, error_count).
+    Rate-limited to 15 req/min (MIN_INTERVAL between batches) — free Gemini tier.
+    If you're on a paid tier, lower MIN_INTERVAL in this file.
+    """
+    if not GEMINI_KEY:
+        print('\n⚠️  GEMINI_API_KEY not set — skipping embedding step')
+        return 0, 0
+
+    rows = fetch_rows(db, force=False)
+    if not rows:
+        print('\n✅ Embeddings: all discover titles already embedded')
+        return 0, 0
+
+    batches = [rows[i:i + BATCH_SIZE] for i in range(0, len(rows), BATCH_SIZE)]
+    print(f'\n🔮 Embedding {len(rows)} new title(s) in {len(batches)} batch call(s)...')
+
+    success = errors = 0
+    last_call = 0.0
+
+    for bidx, batch in enumerate(batches):
+        texts = [build_text(r) for r in batch]
+
+        wait = MIN_INTERVAL - (time.time() - last_call)
+        if wait > 0:
+            time.sleep(wait)
+        last_call = time.time()
+
+        embeddings = embed_batch(texts)
+
+        if embeddings is None:
+            errors += len(batch)
+            print(f'   ❌ Batch {bidx + 1}/{len(batches)} failed — {len(batch)} titles skipped')
+            continue
+
+        for row, emb in zip(batch, embeddings):
+            try:
+                db.table('discover_content').update({'embedding': emb}).eq('id', row['id']).execute()
+                success += 1
+            except Exception as e:
+                errors += 1
+                print(f"   ⚠️  DB save failed '{row.get('title', '?')}': {e}")
+
+        print(f'   ✅ Batch {bidx + 1}/{len(batches)} done ({success} embedded so far)')
+
+    print(f'   Embedded: {success}  Errors: {errors}')
+    return success, errors
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--force', action='store_true', help='Re-embed all rows')

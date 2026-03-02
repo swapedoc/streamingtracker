@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS discover_content (
     genre TEXT,
     popularity FLOAT,
     stream_url TEXT,
+    source TEXT,                             -- pipeline origin e.g. 'tracker', 'manual'
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(tmdb_id, platform)
 );
@@ -118,6 +119,7 @@ ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS seasons          INTEGER;
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_count    INTEGER;
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS episode_runtime  INTEGER;
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS trailer_id       TEXT;
+ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS source           TEXT;     -- pipeline origin e.g. 'tracker', 'manual'
 
 -- ── Leaving Soon columns (run once) ─────────────────────────────────────────
 -- Populated by JustWatchFetcher from the validUntil field on each offer.

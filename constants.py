@@ -15,17 +15,24 @@ PLATFORMS = {
 
 # JustWatch shortName → (display name, fallback URL)
 # Used by watchlist_alerts and fetch_hindi_dubs
+#
+# Disney+ and JioHotstar merged in India — all Disney+/Hotstar shortNames
+# resolve to 'Jiohotstar'. JustWatch may return any of these for the same title.
 JUSTWATCH_PLATFORM_MAP = {
     'nfx':  ('Netflix',      'https://www.netflix.com'),
     'prv':  ('Prime Video',  'https://www.primevideo.com'),
-    'hst':  ('Jiohotstar',   'https://www.jiohotstar.com'),
+    'jhs':  ('Jiohotstar',   'https://www.jiohotstar.com'),  # current live shortName
+    'hst':  ('Jiohotstar',   'https://www.jiohotstar.com'),  # legacy Hotstar
+    'dnp':  ('Jiohotstar',   'https://www.jiohotstar.com'),  # legacy Disney+ (merged)
+    'hot':  ('Jiohotstar',   'https://www.jiohotstar.com'),  # legacy Hotstar variant
+    'jio':  ('Jiohotstar',   'https://www.jiohotstar.com'),  # legacy JioCinema (merged)
     'atp':  ('Apple TV+',    'https://tv.apple.com'),
     'mxs':  ('Max',          'https://www.max.com'),
-    'dnp':  ('Disney+',      'https://www.disneyplus.com'),
 }
 
 # Priority order for JustWatch offer selection (most preferred first)
-JUSTWATCH_PRIORITY = ['nfx', 'prv', 'hst', 'atp', 'mxs', 'dnp']
+# All Jiohotstar shortNames are grouped — whichever appears first in offers wins.
+JUSTWATCH_PRIORITY = ['nfx', 'prv', 'jhs', 'hst', 'dnp', 'hot', 'jio', 'atp', 'mxs']
 
 # ── Movie genre IDs → our label ───────────────────────────────────────────────
 
