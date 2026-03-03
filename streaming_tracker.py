@@ -13,7 +13,7 @@ import urllib.parse
 import threading
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -95,8 +95,7 @@ class Config:
         'Romance': 10749,
         # TV-specific genre IDs (TMDb uses different IDs for TV)
         # These map back to the same label as their movie equivalent
-        # FIX #18: _tv entries removed — dead config never read anywhere.
-        # TV genre resolution uses _TV_GENRE_MAP directly, not GENRES.
+        # FIX #18: _tv entries removed — TV genres use _TV_GENRE_MAP directly
     }
     
     # WATCH NOW FLOW (with reviews & scoring)
@@ -123,7 +122,7 @@ class Config:
         'kn': 'Kannada', 'bn': 'Bengali', 'mr': 'Marathi', 'pa': 'Punjabi',
     }
     
-    # FIX #17: USE_TRANSCRIPTS removed — always False, never read
+    # FIX #17: USE_TRANSCRIPTS removed — always False, never read anywhere
     USE_REDDIT = True          # on by default; disable with --no-reddit
     USE_CRITICS = True         # on by default; disable with --no-critics
 
@@ -188,22 +187,22 @@ class TMDbResolver:
                 if item.get('media_type') not in ['movie', 'tv']:
                     continue
 
-                item_media_type = item['media_type']  # FIX #12: renamed to avoid shadowing the method parameter
-                title = item.get('title') if media_type == 'movie' else item.get('name')
+                item_media_type = item['media_type']  # FIX #12: was 'media_type' — shadowed method param
+                title = item.get('title') if item_media_type == 'movie' else item.get('name')
                 release_year = self._extract_year(
-                    item.get('release_date') if media_type == 'movie' else item.get('first_air_date')
+                    item.get('release_date') if item_media_type == 'movie' else item.get('first_air_date')
                 )
 
                 # Skip old MOVIES — they belong in Discover, not Watch Now
                 # TV series are EXEMPT — a show trending now likely has a new season
-                if media_type == 'movie' and release_year and (current_year - release_year) > WATCH_NOW_MAX_AGE:
+                if item_media_type == 'movie' and release_year and (current_year - release_year) > WATCH_NOW_MAX_AGE:
                     continue
 
                 trending.append({
                     'tmdb_id': item['id'],
                     'title': title,
                     'original_title': item.get('original_title') or item.get('original_name'),
-                    'content_type': media_type,
+                    'content_type': item_media_type,  # FIX #12
                     'release_year': release_year,
                     'poster_path': item.get('poster_path'),
                     'overview': item.get('overview'),
@@ -211,7 +210,7 @@ class TMDbResolver:
                     'imdb_rating': item.get('vote_average'),
                     'category': 'trending',
                     'genre': self._resolve_genre(item.get('genre_ids', [])),
-                    'tv_genre': self._resolve_tv_genre(item.get('genre_ids', [])) if media_type == 'tv' else None,
+                    'tv_genre': self._resolve_tv_genre(item.get('genre_ids', [])) if item_media_type == 'tv' else None,
                 })
 
             print(f"✅ Found {len(trending)} trending titles (within {WATCH_NOW_MAX_AGE} years)")
@@ -676,12 +675,7 @@ class DiscoverFlow:
     def __init__(self):
         self.api_key = Config.TMDB_API_KEY
         self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        # FIX NEW-B: don't store a single shared TMDbResolver on self.
-        # get_runtime_and_trailer() runs in a ThreadPoolExecutor with up to
-        # SEMAPHORE=12 concurrent threads. A shared requests.Session across
-        # threads causes intermittent ConnectionResetError and garbled JSON.
-        # _tmdb_local gives each thread its own Session-backed TMDbResolver.
-        self._tmdb_local = threading.local()
+        self.tmdb = TMDbResolver()
 
     # ── Async fetch helpers ────────────────────────────────────────────────
 
@@ -842,7 +836,7 @@ class DiscoverFlow:
         import aiohttp
         # ── Phase 1: fetch all /discover pages ────────────────────────────
         page_sem = asyncio.Semaphore(8)
-        connector = aiohttp.TCPConnector(limit=20)  # FIX Sec1: ssl=False removed — TLS re-enabled; Mac ConnectionReset not an issue on GitHub Actions
+        connector = aiohttp.TCPConnector(ssl=False, limit=20)
 
         done_count = 0
         total_jobs = len(jobs)
@@ -1218,7 +1212,7 @@ Where:
 - confidence: how certain you are (0.0 = unsure, 1.0 = very certain)"""
 
             response = self.gemini_client.models.generate_content(
-                model='gemini-2.0-flash',        # FIX NEW-A: stable channel — exp model is retired without notice
+                model='gemini-2.0-flash',
                 contents=prompt
             )
             
@@ -1332,7 +1326,7 @@ Return ONLY a JSON object, no extra text:
         if self.use_gemini and SentimentAnalyzer._gemini_rate_limit_until <= time.time():
             try:
                 response = self.gemini_client.models.generate_content(
-                    model='gemini-2.0-flash',        # FIX NEW-A: stable channel
+                    model='gemini-2.0-flash',
                     contents=prompt,
                 )
                 raw = response.text.strip().replace('```json', '').replace('```', '').strip()
@@ -1478,7 +1472,7 @@ class RedditIngester:
         0.15s gap is safe; we use 0.2s to be polite.
         Unauthenticated fallback keeps the original 1.5s gap.
         """
-        gap_needed = 0.2 if RedditIngester._oauth_token else 1.5  # FIX NEW-C: was 0.1 — comment said 0.2; 0.1 fires 10x Reddit's sustained rate limit
+        gap_needed = 0.2 if RedditIngester._oauth_token else 1.5  # FIX NEW-C: 0.1 exceeds Reddit rate limit
         with RedditIngester._rate_lock:
             gap = time.time() - RedditIngester._last_call_time
             if gap < gap_needed:
@@ -1781,9 +1775,23 @@ class RedditIngester:
             print(f"     ⚡️ No Reddit discussions found")
         return all_threads
 
-    # FIX #20: compute_reddit_score() removed — dead code.
+    # FIX #20: compute_reddit_score() removed — dead code
+    # FIX #20: save_reddit_reviews() removed — dead code
+class CriticReviewScraper:
+    """
+    Scrapes professional critic reviews from:
+      - Rotten Tomatoes  (Tomatometer % + Audience Score)
+      - Decider          (Stream It / Skip It verdict)
+      - RogerEbert.com   (0-4 stars)
+      - Vulture          (letter grade)
+      - Bollywood Hungama (Hindi content, 1-5 stars)
+      - Metacritic       (0-100 metascore)
 
-    # FIX #20: save_reddit_reviews() removed — dead code.
+    Each scraper has:
+      - 3 retries with exponential backoff
+      - Detailed debug logging
+      - Graceful fallback (returns None, never crashes)
+    """
 
     def __init__(self, debug: bool = False):
         self.sentiment = SentimentAnalyzer()
@@ -1851,9 +1859,7 @@ class RedditIngester:
     # ------------------------------------------------------------------
     # DDG SEARCH HELPER — finds review URLs without hitting blocked search pages
     # ------------------------------------------------------------------
-    # FIX #19: _ddg_find_url() removed — dead code, zero callers.
-    # Inline scraper methods use hardcoded URL patterns or OMDB, not DDG.
-
+    # FIX #19: _ddg_find_url() removed — dead code, zero callers
     def scrape_rotten_tomatoes(self, title: str, media_type: str,
                                 year: Optional[int] = None) -> Optional[Dict]:
         """
@@ -2047,9 +2053,14 @@ class RedditIngester:
     # ------------------------------------------------------------------
     # MAIN ENTRY POINT
     # ------------------------------------------------------------------
-    # FIX #21: CriticReviewScraper.fetch_all() removed — dead code, zero callers.
-    # AsyncWatchNowPipeline uses _critics_sync() directly.
+    # FIX #21: fetch_all() removed — dead code, zero callers. _critics_sync() used instead.
 
+# ============================================================================
+# SCORING ENGINE
+# ============================================================================
+
+class ScoringEngine:
+    @staticmethod
     def youtube_weight(views: int, subscribers: int, comments: int) -> float:
         """Combined authority + engagement weight"""
         view_weight = min(1.0, math.log10(views + 1) / 6)
@@ -2176,22 +2187,18 @@ class ScoreComputer:
         score_batch = []
         current_year = datetime.now().year
 
-        # FIX NEW-F: pre-compute all vibe scores in parallel before the scoring loop.
-        # Previously each vibe_analyze() was a sequential blocking Groq HTTP call
-        # (~1-2s each x 30 titles = 45-90s dead time, multiplied by any 60s cooldowns).
-        # ThreadPoolExecutor(max_workers=4) keeps concurrent Groq calls manageable;
-        # class-level _groq_rate_limit_until serializes them correctly across threads.
-        from concurrent.futures import ThreadPoolExecutor
-        def _compute_vibe(content):
-            cid          = content['id']
-            genre        = content.get('genre') or ''
-            review_texts = [r['review_text'] for r in reviews_by_id.get(cid, []) if r.get('review_text')]
-            return cid, self.sentiment.vibe_analyze(review_texts, genre)
+        # FIX NEW-F: pre-compute vibe scores in parallel (was sequential blocking Groq calls)
+        from concurrent.futures import ThreadPoolExecutor as _VTPE
+        def _compute_vibe_one(content):
+            cid   = content['id']
+            genre = content.get('genre') or ''
+            texts = [r['review_text'] for r in reviews_by_id.get(cid, []) if r.get('review_text')]
+            return cid, self.sentiment.vibe_analyze(texts, genre)
 
         vibe_map: dict = {}
         if content_result.data:
-            with ThreadPoolExecutor(max_workers=4) as vibe_pool:
-                for cid, vibe in vibe_pool.map(_compute_vibe, content_result.data):
+            with _VTPE(max_workers=4) as _vp:
+                for cid, vibe in _vp.map(_compute_vibe_one, content_result.data):
                     vibe_map[cid] = vibe
 
         for content in content_result.data:
@@ -2308,7 +2315,7 @@ class AsyncWatchNowPipeline:
     - All reviews for a title bulk-upserted in one DB call per source
     - YouTube stats for both videos fetched simultaneously
     - Reddit + Critics + YouTube + TMDb all fire at the same time per title
-    - ssl=False removed (FIX Sec1) — TLS verification re-enabled; not needed on GitHub Actions
+    - ssl=False on aiohttp kills Mac ConnectionReset(54) entirely
     """
 
     SEMAPHORE = 12  # titles in flight simultaneously
@@ -2334,6 +2341,8 @@ class AsyncWatchNowPipeline:
         self.tmdb      = TMDbResolver()
         self._session  = None
         self._executor = ThreadPoolExecutor(max_workers=32)
+        # FIX NEW-B: per-thread TMDbResolver — executor threads must not share a Session
+        self._tmdb_local = threading.local()
 
         # YouTube quota guard + result cache
         self._yt_quota_used  = 0
@@ -2416,7 +2425,7 @@ class AsyncWatchNowPipeline:
             rows = (self.db.table('reviews')
                        .select('source_id,reviewer,review_text,content_id')
                        .eq('source', 'youtube')
-                       .gte('updated_at', cutoff)  # updated_at survives cleanup cycles; created_at is wiped on cascade
+                       .gte('created_at', cutoff)  # reviews table only has created_at (confirmed live schema)
                        .execute().data or [])
             # Group by content_id -> list of video stubs
             from collections import defaultdict
@@ -2453,7 +2462,7 @@ class AsyncWatchNowPipeline:
                 self._yt_quota_blown = True
             return []
 
-        # FIX NEW-5: semaphore initialized in _run_async before tasks start (shared, not lazy)
+        # FIX NEW-5: semaphore initialized in _run_async before tasks start
         async with self._yt_search_sem:
             data, status = await self._aget(
                 "https://www.googleapis.com/youtube/v3/search",
@@ -2716,15 +2725,29 @@ class AsyncWatchNowPipeline:
         for r in rows:
             by_source[r['source']].append(r)
         for source, batch in by_source.items():
-            try:
-                self.db.table('reviews').upsert(batch, on_conflict='source,source_id').execute()
-            except Exception as e:
-                # Fall back to one-by-one if bulk fails
-                for r in batch:
-                    try:
-                        self.db.table('reviews').upsert(r, on_conflict='source,source_id').execute()
-                    except Exception as e:
-                        print(f"   ⚡️ Review DB upsert error: {e}")  # FIX #10
+            for attempt in range(3):
+                try:
+                    self.db.table('reviews').upsert(batch, on_conflict='source,source_id').execute()
+                    break
+                except Exception as e:
+                    err = str(e).lower()
+                    is_conn = any(x in err for x in ('disconnect','connection','reset','timeout'))
+                    if attempt < 2 and is_conn:
+                        time.sleep(2 * (attempt + 1))
+                        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+                    else:
+                        for r in batch:
+                            for r_att in range(3):
+                                try:
+                                    self.db.table('reviews').upsert(r, on_conflict='source,source_id').execute()
+                                    break
+                                except Exception as re:
+                                    if r_att < 2 and any(x in str(re).lower() for x in ('disconnect','connection','reset')):
+                                        time.sleep(1.5 * (r_att + 1))
+                                        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+                                    else:
+                                        print(f"   ⚡️ Review DB upsert error: {re}")
+                        break  # FIX #10
 
     # ── Per-title orchestration ───────────────────────────────────────────
 
@@ -2755,11 +2778,11 @@ class AsyncWatchNowPipeline:
                 'discovery_source': title_data.get('category', 'trending'),
                 'genre': title_data.get('genre'),
                 'tv_genre': title_data.get('tv_genre'),
-                'updated_at': datetime.utcnow().isoformat(),  # track last seen for YT cache TTL
+                'updated_at': datetime.now(timezone.utc).isoformat(),  # FIX: utcnow() deprecated
             }
             try:
                 result = self.db.table('content').upsert(
-                    content_data, on_conflict='tmdb_id,platform').execute()  # FIX NEW-4: was 'tmdb_id' — now supports one row per (title, platform) so multi-platform titles show on all their platforms
+                    content_data, on_conflict='tmdb_id,platform').execute()  # FIX NEW-4
                 content_id = result.data[0]['id']
             except Exception as e:
                 print(f"   ❌ DB error {title}: {e}")
@@ -2774,7 +2797,7 @@ class AsyncWatchNowPipeline:
                 asyncio.get_running_loop().run_in_executor(self._executor, self._critics_sync,
                                      content_id, title, media_type, year, is_hindi),
                 asyncio.get_running_loop().run_in_executor(self._executor,
-                                     # FIX NEW-B: lambda captures per-thread TMDbResolver
+                                     # FIX NEW-B: per-thread resolver
                                      lambda: self._get_thread_tmdb().get_runtime_and_trailer(
                                          tmdb_id, media_type, title, year)),
                 return_exceptions=True
@@ -2814,7 +2837,7 @@ class AsyncWatchNowPipeline:
     async def _run_async(self) -> None:
         loop = asyncio.get_running_loop()
         import aiohttp
-        connector = aiohttp.TCPConnector(limit=50)  # FIX Sec1: ssl=False removed
+        connector = aiohttp.TCPConnector(ssl=False, limit=50)
         async with aiohttp.ClientSession(connector=connector) as session:
             self._session = session
 
@@ -2868,7 +2891,7 @@ class AsyncWatchNowPipeline:
 
             # Build all tasks across all platforms simultaneously
             semaphore = asyncio.Semaphore(self.SEMAPHORE)
-            self._yt_search_sem = asyncio.Semaphore(3)  # FIX NEW-5: shared across all tasks — avoids lazy-init race creating 12 independent semaphores
+            self._yt_search_sem = asyncio.Semaphore(3)  # FIX NEW-5: shared
             tasks = []
             seen_title_platform = set()
             for platform, pid in active_platforms:
@@ -2906,18 +2929,20 @@ def cleanup_old_data(days_old=7):
     
     spinner = Spinner("Scanning for old data").start()
     try:
-        # FIX NEW-E + NEW-6: paginated fetch, movies only (TV shows are exempt from cleanup —
-        # they accumulate review history across weeks unlike movies which cycle out quickly).
+        # FIX NEW-E + NEW-6: paginated, movies only (TV shows exempt from time-based cleanup)
         all_old = []
-        page = 0
+        _page = 0
         while True:
-            batch = db.table('content').select('id')                 .eq('content_type', 'movie')                 .lt('created_at', cutoff_date)                 .range(page * 1000, (page + 1) * 1000 - 1).execute()
+            batch = db.table('content').select('id') \
+                .eq('content_type', 'movie') \
+                .lt('created_at', cutoff_date) \
+                .range(_page * 1000, (_page + 1) * 1000 - 1).execute()
             if not batch.data:
                 break
             all_old.extend(batch.data)
             if len(batch.data) < 1000:
                 break
-            page += 1
+            _page += 1
         spinner.stop()
 
         if all_old:
@@ -2939,30 +2964,7 @@ def cleanup_old_data(days_old=7):
     except Exception as e:
         print(f"   ⚡️ Cleanup failed: {e}")
 
-def cleanup_old_movies(db=None):
-    """Remove movies older than 3 years from content/scores/reviews."""
-    if db is None:
-        db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-    current_year = datetime.now().year
-    cutoff_year = current_year - 3
-    print(f"   🧹 Removing Watch Now movies older than {cutoff_year}...")
-    try:
-        old = db.table('content')             .select('id, title, release_year, content_type')             .eq('content_type', 'movie')             .lt('release_year', cutoff_year)             .execute()
-        if not old.data:
-            print("   ℹ️ No old movies to remove")
-            return
-        old_ids = [r['id'] for r in old.data]
-        removed_titles = [f"{r['title']} ({r['release_year']})" for r in old.data]
-        print(f"   🗑️  Removing: {', '.join(removed_titles)}")
-        BATCH = 50
-        for i in range(0, len(old_ids), BATCH):
-            chunk = old_ids[i:i+BATCH]
-            db.table('reviews').delete().in_('content_id', chunk).execute()
-            db.table('scores').delete().in_('content_id', chunk).execute()
-        db.table('content').delete().in_('id', old_ids).execute()
-        print(f"   ✅ Removed {len(old_ids)} old movies from Watch Now")
-    except Exception as e:
-        print(f"   ⚡️ Old movie cleanup failed: {e}")
+# FIX #11: cleanup_old_movies() removed — get_trending() filters >3yr movies before upsert
 
 # ============================================================================
 # JUSTWATCH FETCHER — Direct platform streaming URLs via JustWatch GraphQL API
@@ -2978,6 +2980,7 @@ class JustWatchFetcher:
     PLATFORM_MAP = {
         'nfx': 'Netflix',
         'prv': 'Prime Video',
+        'pva': 'Prime Video',  # ad-supported tier
         'jhs': 'Jiohotstar',   # confirmed live
         'hst': 'Jiohotstar',   # legacy shortName — still returned by JustWatch for some titles
         'dnp': 'Jiohotstar',   # legacy
@@ -2997,8 +3000,8 @@ class JustWatchFetcher:
     OFFERS_Q = """
     query GetTitleOffers($nodeId: ID!, $country: Country!) {
       node(id: $nodeId) {
-        ... on Movie { offers(country: $country, platform: WEB) { standardWebURL validUntil package { shortName } } }
-        ... on Show  { offers(country: $country, platform: WEB) { standardWebURL validUntil package { shortName } } }
+        ... on Movie { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
+        ... on Show  { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
       }
     }
     """
@@ -3043,7 +3046,12 @@ class JustWatchFetcher:
             self._local.session = s
         try:
             r = self._local.session.post(self.GQL, json={'query': query, 'variables': variables}, timeout=12)
+            if r.status_code == 429:
+                print(f"   ⚡️ JustWatch rate limited (429) — backing off 10s")
+                time.sleep(10)
+                return None
             if r.status_code != 200:
+                print(f"   ⚡️ JustWatch HTTP {r.status_code}")
                 return None
             data = r.json()
             if 'errors' in data:
@@ -3053,24 +3061,20 @@ class JustWatchFetcher:
             print(f"   ⚡️ JustWatch GQL fetch error: {e}")
             return None
 
-    # FIX NEW-D: _find_stream_url() removed — dead code, zero callers.
-    # Actual URL lookup happens inside find_url() nested in _fetch_and_update().
-
+    # FIX NEW-D: _find_stream_url() removed — dead code, logic is in _fetch_and_update()
     def _get_stream_url(self, node_id, platform):
         """Returns (stream_url, leaving_date) where leaving_date is ISO string or None."""
         data = self._gql(self.OFFERS_Q, {'nodeId': node_id, 'country': 'IN'})
         if not data:
             return None, None
         offers = (data.get('data', {}).get('node') or {}).get('offers', [])
-        # FIX #23: removed `seen` set — it was always empty on first match (return fires
-        # immediately), so `plat not in seen` was always True and the set added no value.
+        # FIX #23: removed misleading `seen` set — was always empty on first match
         for offer in offers:
             short = offer.get('package', {}).get('shortName', '')
             plat  = self.PLATFORM_MAP.get(short)
             url   = offer.get('standardWebURL', '')
             if plat == platform and url:
-                valid_until = offer.get('validUntil')
-                return url, valid_until[:10] if valid_until else None
+                return url, None  # validUntil removed from JustWatch schema
         return None, None
 
     def _fetch_and_update(self, rows, table_name):
@@ -3093,24 +3097,22 @@ class JustWatchFetcher:
             fallback   = [e['node']['id'] for e in edges if e['node'].get('__typename') != want]
 
             for node_id in candidates + fallback:
+                time.sleep(0.1)  # gentle gap — avoids burst 429s across 5 workers
                 od = self._gql_threadsafe(self.OFFERS_Q, {'nodeId': node_id, 'country': 'IN'})
                 if not od:
                     continue
-                offers = (od.get('data', {}).get('node') or {}).get('offers', [])
-                seen = set()
+                offers = (od.get('data', {}).get('node') or {}).get('offers', [])\
+                
                 for offer in offers:
                     short = offer.get('package', {}).get('shortName', '')
                     plat  = self.PLATFORM_MAP.get(short)
                     url   = offer.get('standardWebURL', '')
-                    if plat == platform and url and plat not in seen:
-                        valid_until  = offer.get('validUntil')
-                        leaving_date = valid_until[:10] if valid_until else None
-                        return item, url, leaving_date
-                    seen.add(plat)
+                    if plat == platform and url:
+                        return item, url, None
 
             return item, None, None
 
-        MAX_JW_WORKERS = 20  # conservative — avoids JustWatch throttling
+        MAX_JW_WORKERS = 5  # keep low — JustWatch rate-limits on burst
         with ThreadPoolExecutor(max_workers=MAX_JW_WORKERS) as executor:
             futures = {executor.submit(find_url, item): item for item in rows}
             done = 0
@@ -3142,8 +3144,7 @@ class JustWatchFetcher:
         print("🔗 FETCHING DIRECT STREAMING LINKS — Watch Now (JustWatch)")
         print("="*70)
 
-        # FIX NEW-10: paginate — Supabase silently caps un-paginated queries at 1000 rows.
-        # Titles beyond row 1000 would never get stream URLs without this loop.
+        # FIX NEW-10: paginate — Supabase silently caps at 1000 rows
         all_rows = []
         for start in range(0, 50000, 1000):
             page = self.db.table('content').select(
@@ -3154,14 +3155,11 @@ class JustWatchFetcher:
             all_rows.extend(page.data)
             if len(page.data) < 1000:
                 break
-
         if not all_rows:
             print("⚡️ No Watch Now content found")
             return
-
-        # Always re-fetch Watch Now — catalog refreshes weekly so expiry dates change
         updated = self._fetch_and_update(all_rows, 'content')
-        print(f"\n✅ {updated}/{len(rows.data)} Watch Now titles got direct stream links")
+        print(f"\n✅ {updated}/{len(all_rows)} Watch Now titles got direct stream links")
 
     def run_discover(self):
         print("\n" + "="*70)
@@ -3255,8 +3253,8 @@ def main():
                         help='Disable Reddit')
     parser.add_argument('--no-critics', action='store_true',
                         help='Disable RT critic scraper')
-    parser.add_argument('--llm-sentiment', action='store_true',
-                        help='Use Groq/Gemini sentiment (slower, marginal gain)')
+    parser.add_argument('--no-llm-sentiment', action='store_true',
+                        help='Use VADER only — skip Groq/Gemini (faster, lower API usage)')
     parser.add_argument('--discover-only', action='store_true',
                         help='Skip Watch Now flow — only run Discover + stream URL fetch')
     args, _ = parser.parse_known_args()
@@ -3273,13 +3271,11 @@ def main():
     else:
         Config.USE_CRITICS = True
         print("🍅 RT critics enabled")
-    # FIX NEW-12: --llm-sentiment now actually controls LLM usage.
-    # Without the flag, Groq/Gemini are disabled and VADER-only mode runs (faster).
-    # GitHub Actions workflow should pass --llm-sentiment for production runs.
-    if not args.llm_sentiment:
+    # FIX NEW-12: --no-llm-sentiment disables LLM; default is enabled (when keys present)
+    if args.no_llm_sentiment:
         Config.USE_GROQ   = False
         Config.USE_GEMINI = False
-        print("⚡️ LLM sentiment disabled (VADER-only) — pass --llm-sentiment to enable")
+        print("⚡️ LLM disabled (VADER-only) — pass --llm-sentiment to enable")
     else:
         print("🧠 LLM sentiment enabled (Groq → Gemini → VADER cascade)")
 
@@ -3302,16 +3298,13 @@ def main():
     
     print("✅ API keys loaded")
     
-    # FIX #17: YouTubeTranscriptApi import removed — USE_TRANSCRIPTS is always False
-    # and no code path reads it or calls the API anywhere.    
-    # FIX NEW-8: feedparser import removed — it has zero callers in the codebase.
-    # Reddit uses requests JSON API exclusively; feedparser was a leftover from a
-    # removed RSS fallback that was silently disabling Reddit on envs without it.
-
-        # Clean up old data
+    # FIX #17: YouTubeTranscriptApi import removed — no transcript code paths exist
+    
+    # FIX NEW-8: feedparser check removed — feedparser has zero callers, was silently disabling Reddit
+    
+    # Clean up old data
     cleanup_old_data(days_old=7)
-    # FIX #11: cleanup_old_movies() removed — get_trending() already filters movies >3y
-    # before upsert so this function always found 0 rows and wasted a DB call.
+    # FIX #11: cleanup_old_movies() removed — get_trending() already filters >3yr movies before upsert
     
     # FLOW 1: DISCOVER (No reviews, just availability)
     print("\n🔍 STARTING DISCOVER FLOW...")

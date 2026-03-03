@@ -83,6 +83,7 @@ def fetch_rows(db, force: bool) -> list:
     print('📥 Fetching rows from Supabase...')
     while True:
         q = db.table('discover_content').select('id,title,genre,tv_genre,content_type,release_year,overview')
+        q = q.not_.is_('tmdb_id', 'null')  # FIX: skip null-tmdb_id rows (batch catalog inserts)
         if not force:
             q = q.is_('embedding', 'null')
         batch = q.range(offset, offset + 999).execute().data or []
@@ -135,20 +136,15 @@ def run_incremental(db) -> tuple[int, int]:
             print(f'   ❌ Batch {bidx + 1}/{len(batches)} failed — {len(batch)} titles skipped')
             continue
 
-        # FIX NEW-13: replace per-row UPDATE calls with a single batch upsert.
-        # The old code did one Supabase HTTP round-trip per row — 3000+ calls
-        # for a full catalog run, adding 5+ minutes of pure DB write time and
-        # risking Supabase connection rate-limiting mid-run.
-        # upsert on conflict='id' updates only the embedding column and is
-        # equivalent to the old UPDATE ... WHERE id = ? for each row.
-        try:
-            updates = [{'id': row['id'], 'embedding': emb}
-                       for row, emb in zip(batch, embeddings)]
-            db.table('discover_content').upsert(updates, on_conflict='id').execute()
-            success += len(batch)
-        except Exception as e:
-            errors += len(batch)
-            print(f'   ⚠️  Batch {bidx + 1} DB upsert failed: {e}')
+        # FIX: upsert inserts if row missing → tmdb_id NOT NULL crash.
+        # Use per-row UPDATE — only touches embedding on existing rows, safe.
+        for row, emb in zip(batch, embeddings):
+            try:
+                db.table('discover_content').update({'embedding': emb}).eq('id', row['id']).execute()
+                success += 1
+            except Exception as e:
+                errors += 1
+                print(f"   ⚠️  DB save failed '{row.get('title','?')}': {e}")
 
         print(f'   ✅ Batch {bidx + 1}/{len(batches)} done ({success} embedded so far)')
 
