@@ -1552,24 +1552,6 @@ class RedditIngester:
         """
         self._throttle()
 
-        def _parse_posts(results):
-            posts = []
-            for item in results[:limit]:
-                d = item.get('data', {})
-                link = d.get('url', '') or d.get('permalink', '')
-                # permalink from JSON is already relative: /r/sub/comments/id/slug/
-                permalink = d.get('permalink', '')
-                if '/comments/' not in permalink:
-                    continue
-                thread_id = permalink.split('/comments/')[1].split('/')[0]
-                posts.append({'data': {
-                    'id':        thread_id,
-                    'title':     d.get('title', ''),
-                    'permalink': permalink,
-                    'score':     d.get('score', 0),
-                }})
-            return posts
-
         # ── Primary: JSON search ──────────────────────────────────────────
         url = self._api_url(f"/r/{subreddit}/search.json")
         params = {'q': query, 'restrict_sr': 'on', 'sort': 'relevance', 't': 'all', 'limit': limit}
@@ -2173,10 +2155,21 @@ class ScoreComputer:
             texts = [r['review_text'] for r in reviews_by_id.get(cid, []) if r.get('review_text')]
             return cid, self.sentiment.vibe_analyze(texts, genre)
 
+        # Pre-filter: only score content that will actually pass the loop below.
+        # Avoids burning Groq/Gemini calls on old movies that get skipped anyway.
+        scorable = [
+            c for c in content_result.data
+            if not (
+                c.get('content_type') == 'movie'
+                and (c.get('release_year') or 0)
+                and (current_year - c['release_year']) > 3
+            )
+        ]
+
         vibe_map: dict = {}
-        if content_result.data:
+        if scorable:
             with _VTPE(max_workers=4) as _vp:
-                for cid, vibe in _vp.map(_compute_vibe_one, content_result.data):
+                for cid, vibe in _vp.map(_compute_vibe_one, scorable):
                     vibe_map[cid] = vibe
 
         for content in content_result.data:
@@ -3143,7 +3136,7 @@ class JustWatchFetcher:
         all_rows = []
         for start in range(0, 50000, 1000):
             page = self.db.table('content').select(
-                'id, title, content_type, platform, stream_url, leaving_date'
+                'id, title, original_title, content_type, platform, release_year, stream_url, leaving_date'
             ).range(start, start + 999).execute()
             if not page.data:
                 break
@@ -3165,7 +3158,7 @@ class JustWatchFetcher:
         all_data = []
         for start in range(0, 10000, 1000):
             page = self.db.table('discover_content').select(
-                'id, title, content_type, platform, stream_url, leaving_date'
+                'id, title, original_title, content_type, platform, release_year, stream_url, leaving_date'
             ).range(start, start + 999).execute()
             if not page.data:
                 break
@@ -3248,8 +3241,6 @@ def main():
                         help='Disable Reddit')
     parser.add_argument('--no-critics', action='store_true',
                         help='Disable RT critic scraper')
-    parser.add_argument('--no-llm-sentiment', action='store_true',
-                        help='Use VADER only — skip Groq/Gemini (faster, lower API usage)')
     parser.add_argument('--discover-only', action='store_true',
                         help='Skip Watch Now flow — only run Discover + stream URL fetch')
     args, _ = parser.parse_known_args()
@@ -3266,13 +3257,7 @@ def main():
     else:
         Config.USE_CRITICS = True
         print("🍅 RT critics enabled")
-    # FIX NEW-12: --no-llm-sentiment disables LLM; default is enabled (when keys present)
-    if args.no_llm_sentiment:
-        Config.USE_GROQ   = False
-        Config.USE_GEMINI = False
-        print("⚡️ LLM disabled (VADER-only) — pass --llm-sentiment to enable")
-    else:
-        print("🧠 LLM sentiment enabled (Groq → Gemini → VADER cascade)")
+    print("🧠 LLM sentiment enabled (Groq → Gemini → VADER cascade)")
 
     print("\n" + "="*70)
     print("🎬 STREAMING TRACKER - TWO-FLOW SYSTEM")
