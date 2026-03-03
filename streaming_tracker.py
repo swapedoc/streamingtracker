@@ -1186,11 +1186,16 @@ Where:
 - sentiment: -1 (negative), 0 (neutral), 1 (positive)
 - confidence: how certain you are (0.0 = unsure, 1.0 = very certain)"""
 
-            response = self.gemini_client.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=prompt
-            )
-            
+            from concurrent.futures import ThreadPoolExecutor as _GTE, TimeoutError as _GTO
+            with _GTE(max_workers=1) as _gex:
+                _gfut = _gex.submit(self.gemini_client.models.generate_content,
+                                    model='gemini-2.0-flash', contents=prompt)
+                try:
+                    response = _gfut.result(timeout=15)
+                except _GTO:
+                    print(f"  ⚡️ Gemini timed out (15s) — falling back to VADER")
+                    return None
+
             result_text = response.text.strip()
             
             import json
@@ -1300,10 +1305,15 @@ Return ONLY a JSON object, no extra text:
         # Try Gemini
         if self.use_gemini and SentimentAnalyzer._gemini_rate_limit_until <= time.time():
             try:
-                response = self.gemini_client.models.generate_content(
-                    model='gemini-2.0-flash',
-                    contents=prompt,
-                )
+                from concurrent.futures import ThreadPoolExecutor as _VTE, TimeoutError as _VTO
+                with _VTE(max_workers=1) as _vex:
+                    _vfut = _vex.submit(self.gemini_client.models.generate_content,
+                                        model='gemini-2.0-flash', contents=prompt)
+                    try:
+                        response = _vfut.result(timeout=15)
+                    except _VTO:
+                        print(f"  ⚡️ Gemini vibe timed out (15s)")
+                        raise Exception("timeout")
                 raw = response.text.strip().replace('```json', '').replace('```', '').strip()
                 result = json.loads(raw)
                 score = float(result.get('vibe_score', 0))
