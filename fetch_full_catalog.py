@@ -465,25 +465,25 @@ def main():
     cat_errors = 0
     for i in range(0, len(rows), BATCH_SIZE):
         chunk = rows[i:i + BATCH_SIZE]
-        # Group by category value so we send one update per distinct category
-        # per batch (avoids N individual calls while still being correct).
-        by_cat: dict = {}
+        # Update per (tmdb_id, platform) pair — NOT by tmdb_id alone.
+        # A title on two platforms can have different categories (e.g. indian on
+        # Jiohotstar, genre_action on Netflix) — batching by tmdb_id would
+        # assign the first-seen category to both rows.
         for row in chunk:
             cat = computed_categories[(row['tmdb_id'], row['platform'])]
-            by_cat.setdefault(cat, []).append(row['tmdb_id'])
-        for cat, tmdb_ids in by_cat.items():
             try:
                 result = (
                     db.table('discover_content')
                     .update({'category': cat})
-                    .in_('tmdb_id', tmdb_ids)
+                    .eq('tmdb_id', row['tmdb_id'])
+                    .eq('platform', row['platform'])
                     .is_('category', 'null')
                     .execute()
                 )
                 cat_filled += len(result.data) if result.data else 0
             except Exception as e:
-                cat_errors += len(tmdb_ids)
-                print(f'\n  ⚡  Category fill error at batch {i}: {e}')
+                cat_errors += 1
+                print(f'\n  ⚡  Category fill error for {row["title"]}: {e}')
 
     elapsed = time.time() - start
     print(f'\n\n  {"=" * 60}')

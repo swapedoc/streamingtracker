@@ -338,31 +338,6 @@ class TMDbResolver:
         print(f"✅ Found {len(all_results)} trending Hindi {media_type} titles")
         return all_results[:limit]
 
-    def get_watch_providers(self, tmdb_id: int, media_type: str, retries=3) -> List[int]:
-        """Get streaming platforms where content is available in India"""
-        for attempt in range(retries):
-            try:
-                response = self._session.get(
-                    f"{self.base_url}/{media_type}/{tmdb_id}/watch/providers",
-                    params={'api_key': self.api_key},
-                    timeout=15
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                india_data = data.get('results', {}).get('IN', {})
-                providers = india_data.get('flatrate', [])
-                provider_ids = [p['provider_id'] for p in providers]
-                
-                return provider_ids
-                
-            except Exception as e:
-                if attempt < retries - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                else:
-                    return []
-        return []
-    
     def _extract_year(self, date_str):
         if date_str:
             try:
@@ -2086,14 +2061,17 @@ class ScoringEngine:
         current_year = datetime.now().year
         age = current_year - release_year if release_year else 10
 
+        # RT weight is carved from imdb (both are professional/critic signals).
+        # All four weights sum to 1.0.
+        # When RT is absent the caller rescales the remaining three proportionally.
         if age <= 1:
-            return {'youtube': 0.45, 'reddit': 0.20, 'imdb': 0.35}
+            return {'youtube': 0.45, 'reddit': 0.20, 'rt': 0.10, 'imdb': 0.25}
         elif age <= 3:
-            return {'youtube': 0.35, 'reddit': 0.15, 'imdb': 0.50}
+            return {'youtube': 0.35, 'reddit': 0.15, 'rt': 0.10, 'imdb': 0.40}
         elif age <= 5:
-            return {'youtube': 0.28, 'reddit': 0.12, 'imdb': 0.60}
+            return {'youtube': 0.28, 'reddit': 0.12, 'rt': 0.10, 'imdb': 0.50}
         else:
-            return {'youtube': 0.21, 'reddit': 0.09, 'imdb': 0.70}
+            return {'youtube': 0.21, 'reddit': 0.09, 'rt': 0.10, 'imdb': 0.60}
     
     @staticmethod
     def get_category(release_year: int) -> str:
@@ -2213,18 +2191,39 @@ class ScoreComputer:
 
             yt_reviews  = [r for r in reviews if r['source'] == 'youtube']
             red_reviews = [r for r in reviews if r['source'] == 'reddit']
+            rt_reviews  = [r for r in reviews if r['source'] == 'rotten_tomatoes']
 
-            yt_score  = (np.mean([r['weighted_sentiment'] for r in yt_reviews]) + 1) * 50 if yt_reviews else 50
-            red_score = (np.mean([r['weighted_sentiment'] for r in red_reviews]) + 1) * 50 if red_reviews else 50
+            yt_score   = (np.mean([r['weighted_sentiment'] for r in yt_reviews]) + 1) * 50 if yt_reviews else 50
+            red_score  = (np.mean([r['weighted_sentiment'] for r in red_reviews]) + 1) * 50 if red_reviews else 50
+            rt_score   = (np.mean([r['weighted_sentiment'] for r in rt_reviews])  + 1) * 50 if rt_reviews else 50
             imdb_score = self.scoring.normalize_imdb(content.get('imdb_rating'))
             weights    = self.scoring.get_dynamic_weights(content.get('release_year'))
 
-            if red_reviews:
+            has_reddit = bool(red_reviews)
+            has_rt     = bool(rt_reviews)
+
+            if has_reddit and has_rt:
+                # All four sources present — full formula
                 final_score = (weights['youtube'] * yt_score +
-                               weights['reddit'] * red_score +
-                               weights['imdb']   * imdb_score)
+                               weights['reddit']  * red_score +
+                               weights['rt']      * rt_score  +
+                               weights['imdb']    * imdb_score)
+            elif has_reddit and not has_rt:
+                # No RT — rescale youtube + reddit + imdb proportionally
+                drop   = weights['rt']
+                scale  = 1.0 / (1.0 - drop)
+                final_score = (weights['youtube'] * scale * yt_score +
+                               weights['reddit']  * scale * red_score +
+                               weights['imdb']    * scale * imdb_score)
+            elif has_rt and not has_reddit:
+                # No Reddit — rescale youtube + rt + imdb proportionally
+                drop   = weights['reddit']
+                scale  = 1.0 / (1.0 - drop)
+                final_score = (weights['youtube'] * scale * yt_score +
+                               weights['rt']      * scale * rt_score  +
+                               weights['imdb']    * scale * imdb_score)
             else:
-                # No reddit data — rescale youtube and imdb proportionally to sum to 1.0
+                # Neither Reddit nor RT — rescale youtube + imdb proportionally
                 yt_w   = weights['youtube'] / (weights['youtube'] + weights['imdb'])
                 imdb_w = weights['imdb']    / (weights['youtube'] + weights['imdb'])
                 final_score = yt_w * yt_score + imdb_w * imdb_score
@@ -2249,7 +2248,7 @@ class ScoreComputer:
                 'youtube_score':   round(yt_score, 1),
                 'reddit_score':    round(red_score, 1),
                 'imdb_score':      round(imdb_score, 1),
-                'engagement_score': 0.0,
+                'engagement_score': round(rt_score, 1),  # repurposed: stores RT score (was always 0)
                 'final_score':     round(final_score, 1),
                 'label':           label,
                 'category':        category,
@@ -2540,11 +2539,16 @@ class AsyncWatchNowPipeline:
             print(f"   📦 YouTube already searched this run — skipping duplicate (saves 100 quota units)")
             return []
 
+        # Claim this tmdb_id slot NOW — before any await — so any sibling coroutine
+        # (same title on a second platform) that resumes while we're awaiting below
+        # sees it in the set and skips immediately. Without this, both coroutines pass
+        # the check above before either adds to the set, firing two searches.
+        self._yt_searched_tmdb.add(tmdb_id)
+
         # Cache hit — content already has YouTube reviews from a previous run today
         if content_id in getattr(self, '_yt_cache_by_content', {}):
             cached = self._yt_cache_by_content[content_id]
             print(f"   📦 YouTube cached ({len(cached)} reviews) — 0 quota used")
-            self._yt_searched_tmdb.add(tmdb_id)
             return []
 
         if self._yt_quota_blown:
@@ -2614,8 +2618,7 @@ class AsyncWatchNowPipeline:
                 'youtube_weight': yw,
                 'weighted_sentiment': sent['sentiment'] * sent['confidence'] * yw
             })
-        # Register so sibling platforms skip YouTube for this title this run
-        self._yt_searched_tmdb.add(tmdb_id)
+        # tmdb_id was already registered at the top of this function
         return rows
 
     # ── TMDb reviews — parallel sentiment ────────────────────────────────
@@ -2921,20 +2924,24 @@ class AsyncWatchNowPipeline:
         print("="*70)
 
 def cleanup_old_data(days_old=7):
-    """Remove content and associated data older than X days"""
-    print(f"\n🧹 Cleaning up data older than {days_old} days...")
+    """
+    Remove Watch Now content (movies + TV) not seen in the last `days_old` days.
+    Both types are re-fetched fresh on every run, so deleting by age is safe —
+    anything still trending will be re-inserted immediately on the next run.
+    Deletes reviews and scores via ID list (precise) not by date (imprecise).
+    """
+    print(f"\n🧹 Cleaning up Watch Now data older than {days_old} days...")
     db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-    
+
     cutoff_date = (datetime.now() - timedelta(days=days_old)).isoformat()
-    
+
     spinner = Spinner("Scanning for old data").start()
     try:
-        # FIX NEW-E + NEW-6: paginated, movies only (TV shows exempt from time-based cleanup)
+        # Collect ALL old content (movies + TV) — both are refreshed every run
         all_old = []
         _page = 0
         while True:
             batch = db.table('content').select('id') \
-                .eq('content_type', 'movie') \
                 .lt('created_at', cutoff_date) \
                 .range(_page * 1000, (_page + 1) * 1000 - 1).execute()
             if not batch.data:
@@ -2947,18 +2954,20 @@ def cleanup_old_data(days_old=7):
 
         if all_old:
             old_ids = [item['id'] for item in all_old]
-            
-            # Batch delete by ID list instead of one-by-one
+
+            # Delete reviews + scores by ID list — precise, no date ambiguity
             BATCH = 50
             for i in range(0, len(old_ids), BATCH):
                 chunk = old_ids[i:i + BATCH]
                 db.table('reviews').delete().in_('content_id', chunk).execute()
                 db.table('scores').delete().in_('content_id', chunk).execute()
-            
-            # Delete content
-            db.table('content').delete().lt('created_at', cutoff_date).execute()
-            
-            print(f"   ✅ Removed {len(old_ids)} old entries")
+
+            # Delete content by ID list — same set, no accidental over-delete
+            for i in range(0, len(old_ids), BATCH):
+                chunk = old_ids[i:i + BATCH]
+                db.table('content').delete().in_('id', chunk).execute()
+
+            print(f"   ✅ Removed {len(old_ids)} old entries (movies + TV)")
         else:
             print(f"   ℹ️ No old data to clean")
     except Exception as e:
@@ -3000,8 +3009,8 @@ class JustWatchFetcher:
     OFFERS_Q = """
     query GetTitleOffers($nodeId: ID!, $country: Country!) {
       node(id: $nodeId) {
-        ... on Movie { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
-        ... on Show  { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
+        ... on Movie { offers(country: $country, platform: WEB) { standardWebURL validUntil package { shortName } } }
+        ... on Show  { offers(country: $country, platform: WEB) { standardWebURL validUntil package { shortName } } }
       }
     }
     """
@@ -3020,7 +3029,7 @@ class JustWatchFetcher:
 
     def __init__(self):
         self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        # Single session for serial callers (_gql used by _find_stream_url etc.)
+        # Single session for serial callers (non-threaded paths)
         self.session = requests.Session()
         self.session.headers.update(self._HEADERS)
 
@@ -3061,22 +3070,6 @@ class JustWatchFetcher:
             print(f"   ⚡️ JustWatch GQL fetch error: {e}")
             return None
 
-    # FIX NEW-D: _find_stream_url() removed — dead code, logic is in _fetch_and_update()
-    def _get_stream_url(self, node_id, platform):
-        """Returns (stream_url, leaving_date) where leaving_date is ISO string or None."""
-        data = self._gql(self.OFFERS_Q, {'nodeId': node_id, 'country': 'IN'})
-        if not data:
-            return None, None
-        offers = (data.get('data', {}).get('node') or {}).get('offers', [])
-        # FIX #23: removed misleading `seen` set — was always empty on first match
-        for offer in offers:
-            short = offer.get('package', {}).get('shortName', '')
-            plat  = self.PLATFORM_MAP.get(short)
-            url   = offer.get('standardWebURL', '')
-            if plat == platform and url:
-                return url, None  # validUntil removed from JustWatch schema
-        return None, None
-
     def _fetch_and_update(self, rows, table_name):
         """Fetch JustWatch URLs concurrently and update the table."""
         updated = 0
@@ -3108,7 +3101,9 @@ class JustWatchFetcher:
                     plat  = self.PLATFORM_MAP.get(short)
                     url   = offer.get('standardWebURL', '')
                     if plat == platform and url:
-                        return item, url, None
+                        valid_until  = offer.get('validUntil')
+                        leaving_date = valid_until[:10] if valid_until else None
+                        return item, url, leaving_date
 
             return item, None, None
 
