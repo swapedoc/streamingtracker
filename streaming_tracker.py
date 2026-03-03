@@ -3002,8 +3002,8 @@ class JustWatchFetcher:
     OFFERS_Q = """
     query GetTitleOffers($nodeId: ID!, $country: Country!) {
       node(id: $nodeId) {
-        ... on Movie { offers(country: $country, platform: WEB) { standardWebURL validUntil package { shortName } } }
-        ... on Show  { offers(country: $country, platform: WEB) { standardWebURL validUntil package { shortName } } }
+        ... on Movie { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
+        ... on Show  { offers(country: $country, platform: WEB) { standardWebURL package { shortName } } }
       }
     }
     """
@@ -3094,9 +3094,7 @@ class JustWatchFetcher:
                     plat  = self.PLATFORM_MAP.get(short)
                     url   = offer.get('standardWebURL', '')
                     if plat == platform and url:
-                        valid_until  = offer.get('validUntil')
-                        leaving_date = valid_until[:10] if valid_until else None
-                        return item, url, leaving_date
+                        return item, url, None  # validUntil removed from JustWatch schema
 
             return item, None, None
 
