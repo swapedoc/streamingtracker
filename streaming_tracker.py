@@ -480,6 +480,9 @@ class TMDbResolver:
                     for v in videos:
                         if (v.get('site') == 'YouTube'
                                 and v.get('type') == vtype
+                                # default True: if TMDb omits the 'official' field,
+                                # the trailer is still sourced from TMDb itself so
+                                # it is implicitly official enough to use.
                                 and v.get('official', True)):
                             result['trailer_id'] = v['key']
                             break
@@ -1073,6 +1076,7 @@ class SentimentAnalyzer:
     # Class-level lock: serialize ALL Groq calls across threads to avoid rate-limit storms.
     # With 12 concurrent titles each calling Groq, all 12 hit the API simultaneously — instant 429.
     # Serialising them with a lock means Groq gets one call at a time.
+    # timeout=15 is passed to every Groq call so the lock is never held longer than 15s.
     _groq_lock = threading.Lock()
     _groq_rate_limit_until: float = 0.0   # shared across all instances
     _gemini_rate_limit_until: float = 0.0  # shared across all instances
@@ -3150,8 +3154,9 @@ class JustWatchFetcher:
                     continue
                 try:
                     update_payload = {'stream_url': url}
-                    # Always write leaving_date — None clears a stale date if the
-                    # licence was renewed and JustWatch no longer reports one
+                    # leaving_date is always None — JustWatch removed validUntil
+                    # from their GraphQL schema. Written as NULL to clear any
+                    # stale dates left over from before the field was removed.
                     update_payload['leaving_date'] = leaving_date
                     self.db.table(table_name).update(update_payload).eq('id', item['id']).execute()
                     with lock:
@@ -3211,11 +3216,9 @@ class JustWatchFetcher:
         recheck_window_days = 14   # re-check titles leaving within 14 days
 
         # ── Smart skip logic ─────────────────────────────────────────────────
-        # Only re-fetch a title if:
-        #   (a) it has no stream URL yet                → needs first-time fetch
-        #   (b) it has a leaving_date within 14 days   → expiry may have changed
-        #   (c) it has a leaving_date in the past      → may have been renewed
-        # Skip everything else — JustWatch data doesn't change hourly.
+        # Only re-fetch a title if it has no stream URL yet.
+        # leaving_date is always NULL (JustWatch removed validUntil from their API)
+        # so expiry-based re-check cases (b) and (c) never fire in practice.
         needs_check = []
         skipped     = 0
         for row in all_data:

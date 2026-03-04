@@ -464,32 +464,52 @@ def main():
             print(f'\n  ⚡  Batch error at row {i}: {e}')
 
     # FIX FC1 (part 2/2): back-fill category only for rows where it is NULL.
-    # This fires one UPDATE per batch (same chunking as the upsert above) —
-    # NOT per row — so it stays efficient even for a full 3000+ row catalog run.
-    # Rows that already have a category (manual or from a prior run) are untouched.
+    # Fetch all NULL-category rows in one query, group IDs by computed category,
+    # then fire one UPDATE per category bucket (<=10 total DB calls).
+    # Previously one UPDATE per row (~4000 calls), causing a multi-minute hang.
     cat_filled = 0
     cat_errors = 0
-    for i in range(0, len(rows), BATCH_SIZE):
-        chunk = rows[i:i + BATCH_SIZE]
-        # Update per (tmdb_id, platform) pair — NOT by tmdb_id alone.
-        # A title on two platforms can have different categories (e.g. indian on
-        # Jiohotstar, genre_action on Netflix) — batching by tmdb_id would
-        # assign the first-seen category to both rows.
-        for row in chunk:
-            cat = computed_categories[(row['tmdb_id'], row['platform'])]
-            try:
-                result = (
-                    db.table('discover_content')
-                    .update({'category': cat})
-                    .eq('tmdb_id', row['tmdb_id'])
-                    .eq('platform', row['platform'])
-                    .is_('category', 'null')
-                    .execute()
-                )
-                cat_filled += len(result.data) if result.data else 0
-            except Exception as e:
-                cat_errors += 1
-                print(f'\n  ⚡  Category fill error for {row["title"]}: {e}')
+    try:
+        null_rows = []
+        for _start in range(0, 100_000, 1000):
+            page = (
+                db.table('discover_content')
+                .select('id, tmdb_id, platform')
+                .is_('category', 'null')
+                .range(_start, _start + 999)
+                .execute()
+            )
+            batch = page.data or []
+            null_rows.extend(batch)
+            if len(batch) < 1000:
+                break
+
+        if null_rows:
+            from collections import defaultdict
+            ids_by_cat: dict = defaultdict(list)
+            for row in null_rows:
+                key = (row['tmdb_id'], row['platform'])
+                cat = computed_categories.get(key)
+                if cat:
+                    ids_by_cat[cat].append(row['id'])
+
+            print(f'\n  🏷️  Back-filling {len(null_rows)} NULL categories '
+                  f'in {len(ids_by_cat)} bucket(s)...')
+
+            for cat, ids in ids_by_cat.items():
+                try:
+                    result = (
+                        db.table('discover_content')
+                        .update({'category': cat})
+                        .in_('id', ids)
+                        .execute()
+                    )
+                    cat_filled += len(result.data) if result.data else len(ids)
+                except Exception as e:
+                    cat_errors += len(ids)
+                    print(f'\n  ⚡  Category fill error for bucket {cat}: {e}')
+    except Exception as e:
+        print(f'\n  ⚡  Category back-fill query failed: {e}')
 
     elapsed = time.time() - start
     print(f'\n\n  {"=" * 60}')

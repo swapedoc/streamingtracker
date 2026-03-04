@@ -10,17 +10,13 @@
 --   LIVE-3  : scores.id is SERIAL (INTEGER), not BIGSERIAL — fixed
 --   LIVE-4  : reviews.content_id is INTEGER nullable with FK to content(id) — fixed
 --   LIVE-5  : scores.content_id is INTEGER nullable with FK to content(id) — fixed
---   LIVE-6  : content timestamps are TIMESTAMP (no tz) in live — matched
---   LIVE-7  : reviews.created_at is TIMESTAMP (no tz) + added updated_at TIMESTAMPTZ
---   LIVE-8  : scores.computed_at is TIMESTAMP (no tz) in live — matched
+--   LIVE-6  : content timestamps are TIMESTAMPTZ in live (not plain TIMESTAMP) — fixed
+--   LIVE-7  : reviews.created_at and updated_at are both TIMESTAMPTZ in live — fixed
+--   LIVE-8  : scores.computed_at is TIMESTAMPTZ in live — fixed
 --   LIVE-9  : watchlist has poster TEXT, score NUMERIC, added_at TIMESTAMPTZ
 --             content_type NOT NULL, notified NOT NULL — all added
---   LIVE-10 : watchlist unique constraint is (browser_id, title) — matched
---             NOTE: should be (browser_id, title, content_type) — see bug list
---   LIVE-11 : discover_content.category is NOT NULL DEFAULT 'genre_drama'
---             NOTE: this breaks the FC1 back-fill (.is_('category','null') never
---             matches). To fix on live: ALTER TABLE discover_content
---             ALTER COLUMN category DROP NOT NULL, SET DEFAULT NULL.
+--   LIVE-10 : watchlist unique constraint is (browser_id, title, content_type) — fixed
+--   LIVE-11 : discover_content.category is nullable with no default — fixed
 --   LIVE-12 : Added all indexes present in live but missing from schema:
 --             idx_content_discovery, idx_content_tmdb,
 --             idx_discover_content_stream_url, idx_scores_category,
@@ -40,12 +36,6 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- ── discover_content ──────────────────────────────────────────────────────────
 -- Stores the full OTT catalog for the Discover tab (no reviews, just availability).
 -- Populated by streaming_tracker.py (DiscoverFlow) and fetch_full_catalog.py.
---
--- NOTE: category is NOT NULL DEFAULT 'genre_drama' to match live DB.
--- This means the FC1 back-fill pattern (.is_('category','null')) never fires on
--- newly inserted rows because Postgres applies the default immediately. To fix:
---   ALTER TABLE discover_content ALTER COLUMN category DROP NOT NULL;
---   ALTER TABLE discover_content ALTER COLUMN category SET DEFAULT NULL;
 CREATE TABLE IF NOT EXISTS discover_content (
     id              BIGSERIAL PRIMARY KEY,
     tmdb_id         INTEGER       NOT NULL,
@@ -57,7 +47,7 @@ CREATE TABLE IF NOT EXISTS discover_content (
     imdb_rating     FLOAT,
     poster_path     TEXT,
     overview        TEXT,
-    category        TEXT          NOT NULL DEFAULT 'genre_drama',
+    category        TEXT,                              -- nullable: back-filled by fetch_full_catalog.py after upsert
     genre           TEXT,
     tv_genre        TEXT,
     popularity      FLOAT,
@@ -88,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_discover_embedding ON discover_content
 -- ── content ───────────────────────────────────────────────────────────────────
 -- Watch Now titles — enriched with reviews, scores, and stream URLs.
 -- id is SERIAL (INTEGER) matching live DB sequence.
--- Timestamps are TIMESTAMP (no timezone) matching live DB types.
+-- Timestamps are TIMESTAMPTZ matching live DB types.
 CREATE TABLE IF NOT EXISTS content (
     id               SERIAL PRIMARY KEY,
     tmdb_id          INTEGER   NOT NULL,
@@ -112,8 +102,8 @@ CREATE TABLE IF NOT EXISTS content (
     episode_runtime  INTEGER,
     trailer_id       TEXT,
     leaving_date     DATE,
-    created_at       TIMESTAMP DEFAULT NOW(),
-    updated_at       TIMESTAMP DEFAULT NOW()              -- refreshed on every upsert
+    created_at       TIMESTAMPTZ DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ DEFAULT NOW()              -- refreshed on every upsert
 );
 
 -- Drop legacy single-column unique before adding composite (idempotent)
@@ -148,7 +138,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     youtube_weight       FLOAT   DEFAULT 0,
     engagement_score     FLOAT   DEFAULT 0,
     weighted_sentiment   FLOAT   DEFAULT 0,
-    created_at           TIMESTAMP   DEFAULT NOW(),
+    created_at           TIMESTAMPTZ DEFAULT NOW(),
     updated_at           TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (source, source_id)
 );
@@ -160,7 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_reviews_content ON reviews(content_id);
 -- One row per content title — computed by ScoreComputer.
 -- id is SERIAL (INTEGER) matching live DB.
 -- content_id is INTEGER nullable with FK to content(id) ON DELETE CASCADE.
--- computed_at is TIMESTAMP (no tz) matching live DB.
+-- computed_at is TIMESTAMPTZ matching live DB.
 CREATE TABLE IF NOT EXISTS scores (
     id               SERIAL  PRIMARY KEY,
     content_id       INTEGER UNIQUE REFERENCES content(id) ON DELETE CASCADE,
@@ -178,7 +168,7 @@ CREATE TABLE IF NOT EXISTS scores (
     rt_score         FLOAT   DEFAULT 0,                    -- Rotten Tomatoes weighted score
     vibe_score       FLOAT,                                -- 1.0–10.0 genre-specific intensity
     vibe_label       TEXT,                                 -- e.g. 'Scare Factor', 'Laugh Meter'
-    computed_at      TIMESTAMP DEFAULT NOW()
+    computed_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_scores_final    ON scores(final_score DESC);
@@ -190,10 +180,6 @@ CREATE INDEX IF NOT EXISTS idx_scores_category ON scores(category);
 -- poster and score columns exist in live DB (from earlier version, unused by code).
 -- added_at is the ordering column used by index.html (not created_at).
 -- content_type and notified are NOT NULL in live DB.
---
--- NOTE: unique constraint is (browser_id, title) matching live DB.
--- Should be (browser_id, title, content_type) to allow tracking same title as
--- both movie and TV. See bug list for the ALTER to fix this on live.
 CREATE TABLE IF NOT EXISTS watchlist (
     id               BIGSERIAL PRIMARY KEY,
     browser_id       TEXT        NOT NULL,
@@ -208,7 +194,7 @@ CREATE TABLE IF NOT EXISTS watchlist (
     added_at         TIMESTAMPTZ NOT NULL  DEFAULT NOW(),     -- ordering column used by frontend
     telegram_chat_id TEXT,
     created_at       TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (browser_id, title)
+    UNIQUE (browser_id, title, content_type)
 );
 
 -- Partial index — covers the nightly alert query (notified=false titles only)
@@ -259,7 +245,7 @@ ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS embedding       vector(307
 
 -- content additions
 ALTER TABLE content ADD COLUMN IF NOT EXISTS imdb_id        TEXT;
-ALTER TABLE content ADD COLUMN IF NOT EXISTS updated_at     TIMESTAMP DEFAULT NOW();
+ALTER TABLE content ADD COLUMN IF NOT EXISTS updated_at     TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE content ADD COLUMN IF NOT EXISTS runtime        INTEGER;
 ALTER TABLE content ADD COLUMN IF NOT EXISTS seasons        INTEGER;
 ALTER TABLE content ADD COLUMN IF NOT EXISTS episode_count  INTEGER;

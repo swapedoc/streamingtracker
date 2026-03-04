@@ -123,7 +123,7 @@ def _yt_search(queries: list, cap: int) -> str | None:
     """
     Search YouTube for an official trailer from a trusted channel.
     Accepts a list of queries tried in order — first match wins.
-    Counts as ONE quota unit regardless of how many queries are attempted.
+    Each HTTP call to YouTube counts as one quota unit (100 units).
     Returns video_id or None. Thread-safe quota guard — stops on 403 or cap.
     """
     global _yt_calls_made, _yt_quota_blown
@@ -131,14 +131,16 @@ def _yt_search(queries: list, cap: int) -> str | None:
     with _yt_lock:
         if _yt_quota_blown:
             return None
-        if _yt_calls_made >= cap:
-            _yt_quota_blown = True
-            print(f"\n   ⚠️  YouTube cap reached ({cap} searches = {cap*100:,} units) — skipping remaining")
-            return None
-        _yt_calls_made += 1
 
     for q in queries:
         try:
+            with _yt_lock:
+                if _yt_calls_made >= cap:
+                    _yt_quota_blown = True
+                    print(f"\n   ⚠️  YouTube cap reached ({cap} searches = {cap*100:,} units) — skipping remaining")
+                    return None
+                _yt_calls_made += 1
+
             r = _get_session().get(
                 'https://www.googleapis.com/youtube/v3/search',
                 params={'part': 'snippet', 'q': q, 'type': 'video',
@@ -222,6 +224,9 @@ def _get_trailer_from_tmdb(tmdb_id: int, media_type: str) -> str | None:
             for v in data.get('results', []):
                 if (v.get('site') == 'YouTube'
                         and v.get('type') == vtype
+                        # default True: if TMDb omits the 'official' field,
+                        # the trailer is still sourced from TMDb itself so
+                        # it is implicitly official enough to use.
                         and v.get('official', True)):
                     return v['key']
     return None
