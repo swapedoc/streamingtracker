@@ -2137,6 +2137,7 @@ class ScoreComputer:
         all_reviews = []
         PAGE_SIZE = 1000
         page = 0
+        pages_fetched = 0
         while True:
             batch = self.db.table('reviews').select(
                 'content_id,source,sentiment,confidence,weighted_sentiment,review_text'
@@ -2144,6 +2145,7 @@ class ScoreComputer:
             if not batch.data:
                 break
             all_reviews.extend(batch.data)
+            pages_fetched += 1
             if len(batch.data) < PAGE_SIZE:
                 break
             page += 1
@@ -2152,7 +2154,7 @@ class ScoreComputer:
             def __init__(self, data): self.data = data
         reviews_result = _ReviewsResult(all_reviews)
         spinner.stop()
-        print(f"   📦 {len(all_reviews)} reviews loaded across {page + 1} page(s)")
+        print(f"   📦 {len(all_reviews)} reviews loaded across {pages_fetched} page(s)")
 
         if not content_result.data:
             print("⚡️ No content found")

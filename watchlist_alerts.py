@@ -274,24 +274,36 @@ def main():
 
     # Fetch un-notified rows that have no streaming platform yet
     print('\n📥 Fetching pending watchlist items...')
-    result = (
-        db.table('watchlist')
-        .select('id, browser_id, title, content_type, platform, stream_url, telegram_chat_id')
-        .eq('notified', False)
-        .is_('platform', 'null')   # only Discover items (no platform yet)
-        .execute()
-    )
-    rows = result.data or []
+    rows = []
+    for _start in range(0, 100_000, 1000):
+        page = (
+            db.table('watchlist')
+            .select('id, browser_id, title, content_type, platform, stream_url, telegram_chat_id')
+            .eq('notified', False)
+            .is_('platform', 'null')
+            .range(_start, _start + 999)
+            .execute()
+        )
+        batch = page.data or []
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
 
     # Also include rows that had a platform but notified=False (newly added Watch Now items)
-    result2 = (
-        db.table('watchlist')
-        .select('id, browser_id, title, content_type, platform, stream_url, telegram_chat_id')
-        .eq('notified', False)
-        .not_.is_('platform', 'null')
-        .execute()
-    )
-    rows_with_platform = result2.data or []
+    rows_with_platform = []
+    for _start in range(0, 100_000, 1000):
+        page = (
+            db.table('watchlist')
+            .select('id, browser_id, title, content_type, platform, stream_url, telegram_chat_id')
+            .eq('notified', False)
+            .not_.is_('platform', 'null')
+            .range(_start, _start + 999)
+            .execute()
+        )
+        batch = page.data or []
+        rows_with_platform.extend(batch)
+        if len(batch) < 1000:
+            break
 
     # FIX WA1: rows_with_platform had a platform set but notified=False.
     # These are titles the user tracked directly from Watch Now — they are
@@ -317,10 +329,16 @@ def main():
                   (f', ❌ {failed_wn} failed' if failed_wn else ''))
         else:
             print(f'  ℹ️  {len(rows_with_platform)} Watch Now item(s) had no telegram_chat_id — skipped')
-        # Mark all notified after alerts are sent (or if no chat_id to notify)
-        ids = [r['id'] for r in rows_with_platform]
-        db.table('watchlist').update({'notified': True}).in_('id', ids).execute()
-        print(f'  ✅ Marked {len(ids)} Watch Now items as notified')
+        # FIX WA3: only mark notified for rows whose alert was actually sent.
+        # Rows with no telegram_chat_id are marked immediately (nothing to send).
+        # Rows whose Telegram send failed stay un-notified so they retry next run.
+        ids_no_tg   = [r['id'] for r in rows_with_platform if not r.get('telegram_chat_id')]
+        ids_alerted = [r['id'] for r in rows_with_platform if r.get('telegram_chat_id') and r.get('platform')]
+        # If every single alert failed, don't mark anyone notified
+        ids_to_mark = ids_no_tg if (watch_now_hits and sent_wn == 0 and failed_wn > 0) else ids_no_tg + ids_alerted
+        if ids_to_mark:
+            db.table('watchlist').update({'notified': True}).in_('id', ids_to_mark).execute()
+            print(f'  ✅ Marked {len(ids_to_mark)} Watch Now items as notified')
 
     if not rows:
         print('  ✨ No pending Discover items to check.')
