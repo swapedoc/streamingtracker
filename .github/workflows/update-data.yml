@@ -92,13 +92,15 @@ jobs:
       #   3. embed_new_discover()                   — Gemini embeddings, no YouTube
       # FIX YML2: without this step, new Sunday catalog rows had no stream_url and
       # were invisible in Vibe Search for up to 10h until the next 12h cron fired.
+      # FIX YML3: added catalog-only — a manual catalog-only dispatch also needs
+      # stream URLs + embeddings populated immediately, same reasoning as FIX YML2.
       # NOTE: YOUTUBE_API_KEY is intentionally NOT passed here — --discover-only
       # never calls AsyncWatchNowPipeline so no YouTube quota is consumed. This is
       # the reason streaming_tracker.py is not run normally on Sundays and that
       # constraint is preserved: Watch Now + full scoring still only runs on the
       # 12h cron, never on Sundays.
-      - name: Populate stream URLs + embeddings for new catalog rows (Sundays only)
-        if: github.event.schedule == '0 2 * * 0'
+      - name: Populate stream URLs + embeddings for new catalog rows
+        if: github.event.schedule == '0 2 * * 0' || inputs.mode == 'catalog-only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
