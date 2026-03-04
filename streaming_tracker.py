@@ -1155,7 +1155,7 @@ Review: {text[:2000]}"""
 
             result = json.loads(result_text)
 
-            sentiment = result.get('sentiment', 0)
+            sentiment = int(result.get('sentiment', 0))
             confidence = result.get('confidence', 0.5)
 
             if sentiment not in [-1, 0, 1]:
@@ -1204,7 +1204,7 @@ Where:
             result_text = result_text.replace('```json', '').replace('```', '').strip()
             result = json.loads(result_text)
             
-            sentiment = result.get('sentiment', 0)
+            sentiment = int(result.get('sentiment', 0))
             confidence = result.get('confidence', 0.5)
             
             if sentiment not in [-1, 0, 1]:
@@ -2251,7 +2251,7 @@ class ScoreComputer:
                 'youtube_score':   round(yt_score, 1),
                 'reddit_score':    round(red_score, 1),
                 'imdb_score':      round(imdb_score, 1),
-                'rt_score':        round(rt_score, 1),
+                'engagement_score': round(rt_score, 1),
                 'final_score':     round(final_score, 1),
                 'label':           label,
                 'category':        category,
