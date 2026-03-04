@@ -205,6 +205,9 @@ async def fetch_all(api_key: str, content_types: list) -> list:
                             await asyncio.sleep(2 ** attempt)
                             continue
                         if resp.status != 200:
+                            if attempt < 2:
+                                await asyncio.sleep(0.5 * (attempt + 1))
+                                continue
                             break
                         data  = await resp.json()
                         items = []
@@ -291,6 +294,9 @@ async def fetch_all(api_key: str, content_types: list) -> list:
                             await asyncio.sleep(2 ** attempt)
                             continue
                         if resp.status != 200:
+                            if attempt < 2:
+                                await asyncio.sleep(0.5 * (attempt + 1))
+                                continue
                             break
                         data   = await resp.json()
                         india  = data.get('results', {}).get('IN', {})
