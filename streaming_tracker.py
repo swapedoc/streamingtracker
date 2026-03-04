@@ -53,6 +53,8 @@ class Spinner:
         sys.stdout.flush()
 
 def progress(current, total, label=""):
+    if total == 0:
+        return
     bar_len = 30
     filled = int(bar_len * current / total)
     bar = "█" * filled + "░" * (bar_len - filled)
@@ -227,7 +229,7 @@ class TMDbResolver:
         reviewed feed and non-Hindi content without a dub isn't useful there.
         Use DiscoverFlow for the full Indian-language catalog (all 8 languages).
         Step 1: Pull from /trending/week filtered to original_language=hi (truly trending this week).
-        Step 2: Top up via /discover with a 2-year recency cap so old evergreen titles
+        Step 2: Top up via /discover with a 3-year recency cap so old evergreen titles
                 like PK, Dangal etc. never appear in the Watch Now list.
         """
         print(f"\n🇮🇳 Fetching trending Hindi {media_type} content...")
@@ -821,7 +823,7 @@ class DiscoverFlow:
             try:
                 result = await asyncio.wait_for(
                     self._fetch_page(session, job, semaphore),
-                    timeout=20
+                    timeout=75   # 3 attempts × 20s inner timeout + sleep buffer
                 )
             except asyncio.TimeoutError:
                 print(f"   ⏱️  Timeout: {job.get('category','?')} page {job.get('params',{}).get('page','?')}")
@@ -2251,7 +2253,8 @@ class ScoreComputer:
                 'youtube_score':   round(yt_score, 1),
                 'reddit_score':    round(red_score, 1),
                 'imdb_score':      round(imdb_score, 1),
-                'engagement_score': round(rt_score, 1),
+                'engagement_score': 0,               # legacy column — kept for backwards compat
+                'rt_score':         round(rt_score, 1),
                 'final_score':     round(final_score, 1),
                 'label':           label,
                 'category':        category,
@@ -2381,10 +2384,11 @@ class AsyncWatchNowPipeline:
                         return (None, 403) if return_status else None
                     if r.status in (400, 404):
                         return (None, r.status) if return_status else None
-                    # Other non-200: log on last attempt
+                    # 5xx and other transient errors — log on last attempt, retry otherwise
                     if attempt == retries - 1:
                         print(f"   ⚡️ HTTP {r.status} for {label or url.split('/')[-1]}")
-                    return (None, r.status) if return_status else None
+                        return (None, r.status) if return_status else None
+                    # not last attempt — fall through to sleep + retry
             except Exception as e:
                 last_status = 0
                 if attempt == retries - 1:
