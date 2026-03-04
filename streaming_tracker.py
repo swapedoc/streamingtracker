@@ -310,8 +310,10 @@ class TMDbResolver:
                     )
                     response.raise_for_status()
                     for item in response.json().get("results", []):
-                        if item["id"] in seen_ids or len(all_results) >= limit:
+                        if len(all_results) >= limit:
                             break
+                        if item["id"] in seen_ids:
+                            continue
                         seen_ids.add(item["id"])
                         title = item.get("title") if mt == "movie" else item.get("name")
                         release_date = item.get("release_date") if mt == "movie" else item.get("first_air_date")
@@ -793,8 +795,6 @@ class DiscoverFlow:
                                 'genre': resolved_genre,
                                 'tv_genre': resolved_tv_genre,
                             }
-                            if job['category'] == 'indian':
-                                parsed['language'] = item.get('original_language') or job.get('language', 'hi')
                             items.append(parsed)
                         return items
                 except Exception as e:
@@ -824,7 +824,7 @@ class DiscoverFlow:
                     timeout=20
                 )
             except asyncio.TimeoutError:
-                print(f"   ⏱️  Timeout: {job.get('category','?')} page {job.get('page','?')}")
+                print(f"   ⏱️  Timeout: {job.get('category','?')} page {job.get('params',{}).get('page','?')}")
                 result = []
             except Exception as e:
                 result = []
@@ -1062,6 +1062,11 @@ class DiscoverFlow:
 # ============================================================================
 
 class SentimentAnalyzer:
+    # Class-level executor for Gemini timeout wrapper — reused across all calls.
+    # Creating a new ThreadPoolExecutor per call (old behaviour) spun up and tore
+    # down a thread pool for every sentiment request. One shared executor is sufficient.
+    _gemini_executor = ThreadPoolExecutor(max_workers=2)
+
     # Class-level lock: serialize ALL Groq calls across threads to avoid rate-limit storms.
     # With 12 concurrent titles each calling Groq, all 12 hit the API simultaneously — instant 429.
     # Serialising them with a lock means Groq gets one call at a time.
@@ -1148,7 +1153,6 @@ Review: {text[:2000]}"""
             result_text = response.choices[0].message.content.strip()
             result_text = result_text.replace('```json', '').replace('```', '').strip()
 
-            import json
             result = json.loads(result_text)
 
             sentiment = result.get('sentiment', 0)
@@ -1186,19 +1190,17 @@ Where:
 - sentiment: -1 (negative), 0 (neutral), 1 (positive)
 - confidence: how certain you are (0.0 = unsure, 1.0 = very certain)"""
 
-            from concurrent.futures import ThreadPoolExecutor as _GTE, TimeoutError as _GTO
-            with _GTE(max_workers=1) as _gex:
-                _gfut = _gex.submit(self.gemini_client.models.generate_content,
-                                    model='gemini-2.0-flash', contents=prompt)
-                try:
-                    response = _gfut.result(timeout=15)
-                except _GTO:
-                    print(f"  ⚡️ Gemini timed out (15s) — falling back to VADER")
-                    return None
+            from concurrent.futures import TimeoutError as _GTO
+            _gfut = self._gemini_executor.submit(self.gemini_client.models.generate_content,
+                                model='gemini-2.0-flash', contents=prompt)
+            try:
+                response = _gfut.result(timeout=15)
+            except _GTO:
+                print(f"  ⚡️ Gemini timed out (15s) — falling back to VADER")
+                return None
 
             result_text = response.text.strip()
             
-            import json
             result_text = result_text.replace('```json', '').replace('```', '').strip()
             result = json.loads(result_text)
             
@@ -1305,15 +1307,14 @@ Return ONLY a JSON object, no extra text:
         # Try Gemini
         if self.use_gemini and SentimentAnalyzer._gemini_rate_limit_until <= time.time():
             try:
-                from concurrent.futures import ThreadPoolExecutor as _VTE, TimeoutError as _VTO
-                with _VTE(max_workers=1) as _vex:
-                    _vfut = _vex.submit(self.gemini_client.models.generate_content,
-                                        model='gemini-2.0-flash', contents=prompt)
-                    try:
-                        response = _vfut.result(timeout=15)
-                    except _VTO:
-                        print(f"  ⚡️ Gemini vibe timed out (15s)")
-                        raise Exception("timeout")
+                from concurrent.futures import TimeoutError as _VTO
+                _vfut = self._gemini_executor.submit(self.gemini_client.models.generate_content,
+                                    model='gemini-2.0-flash', contents=prompt)
+                try:
+                    response = _vfut.result(timeout=15)
+                except _VTO:
+                    print(f"  ⚡️ Gemini vibe timed out (15s)")
+                    raise Exception("timeout")
                 raw = response.text.strip().replace('```json', '').replace('```', '').strip()
                 result = json.loads(raw)
                 score = float(result.get('vibe_score', 0))
@@ -1953,7 +1954,6 @@ class CriticReviewScraper:
 
         for script in soup.find_all('script', type='application/ld+json'):
             try:
-                import json as _json
                 data = json.loads(script.string or '')
                 rating = data.get('aggregateRating', {})
                 if rating:
@@ -2251,7 +2251,7 @@ class ScoreComputer:
                 'youtube_score':   round(yt_score, 1),
                 'reddit_score':    round(red_score, 1),
                 'imdb_score':      round(imdb_score, 1),
-                'engagement_score': round(rt_score, 1),  # repurposed: stores RT score (was always 0)
+                'rt_score':        round(rt_score, 1),
                 'final_score':     round(final_score, 1),
                 'label':           label,
                 'category':        category,
@@ -2349,7 +2349,6 @@ class AsyncWatchNowPipeline:
         # YouTube quota guard + result cache
         self._yt_quota_used  = 0
         self._yt_quota_blown = False   # True once we get a 403/quota error
-        self._yt_cache: dict = {}      # query -> List[video_dict]
         self._load_yt_cache()
 
     # ── aiohttp helpers ───────────────────────────────────────────────────

@@ -23,6 +23,7 @@ SUPABASE SETUP (run once in Supabase SQL editor):
 import os
 import sys
 import time
+import re
 import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -284,8 +285,6 @@ class LiveProgress:
         sys.stdout.write(f'\r{" " * 110}\r')
         sys.stdout.flush()
 
-
-import re
 
 def _normalize(s: str) -> str:
     s = s.lower().strip()

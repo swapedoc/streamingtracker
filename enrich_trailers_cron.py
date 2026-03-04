@@ -99,7 +99,19 @@ def _make_session() -> requests.Session:
     s.headers.update({'User-Agent': 'streaming-trailer-cron/1.0'})
     return s
 
-SESSION = _make_session()
+# ── Thread-local HTTP sessions ────────────────────────────────────────────────
+# enrich_trailers_cron runs WORKERS=6 concurrent threads. requests.Session is
+# NOT thread-safe — the cookie jar and retry adapter share mutable state, causing
+# race conditions under concurrent requests. Each worker gets its own session via
+# threading.local() — same pattern used by every other script in this codebase.
+
+import threading as _threading
+_thread_local = _threading.local()
+
+def _get_session() -> requests.Session:
+    if not hasattr(_thread_local, 'session'):
+        _thread_local.session = _make_session()
+    return _thread_local.session
 
 # ── YouTube quota guard (shared across threads) ───────────────────────────────
 
@@ -124,11 +136,10 @@ def _yt_search(queries: list, cap: int) -> str | None:
             print(f"\n   ⚠️  YouTube cap reached ({cap} searches = {cap*100:,} units) — skipping remaining")
             return None
         _yt_calls_made += 1
-        call_num = _yt_calls_made
 
     for q in queries:
         try:
-            r = SESSION.get(
+            r = _get_session().get(
                 'https://www.googleapis.com/youtube/v3/search',
                 params={'part': 'snippet', 'q': q, 'type': 'video',
                         'maxResults': 8, 'order': 'relevance', 'key': YOUTUBE_API_KEY},
@@ -166,7 +177,7 @@ def _yt_search(queries: list, cap: int) -> str | None:
 
 def _tmdb_get(path: str, params: dict) -> dict | None:
     try:
-        r = SESSION.get(
+        r = _get_session().get(
             f"https://api.themoviedb.org/3{path}",
             params={'api_key': TMDB_API_KEY, **params},
             timeout=10,
