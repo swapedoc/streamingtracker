@@ -8,7 +8,7 @@
 --   SD2          : Added imdb_id TEXT + updated_at TIMESTAMPTZ to content table
 --   SD3          : Added engagement_score + reviewer_subscribers + views +
 --                  likes + comments_count + youtube_weight to reviews table
---   SD4  / #22   : rankings table documented (matches live DB — 7 columns)
+--   SD4  / #22   : rankings orphan table dropped (zero code references)
 --   EF6  / SD5   : Added match_content() pgvector RPC (required by edgefunction.ts)
 --   EF11         : Added RLS policy on discover_content for public read
 --   content.id   : Fixed to BIGSERIAL (was INTEGER in schema, BIGSERIAL in live DB)
@@ -165,18 +165,9 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_browser_id ON watchlist(browser_id);
 CREATE INDEX IF NOT EXISTS idx_watchlist_notified   ON watchlist(notified);
 
 -- ── Rankings table ────────────────────────────────────────────────────────────
--- FIX SD4 / #22: table exists in live DB with 7 columns but was absent from schema.
--- Documented here. Not referenced by any current code — likely a legacy feature.
--- To remove: DROP TABLE IF EXISTS rankings;
-CREATE TABLE IF NOT EXISTS rankings (
-    id             SERIAL PRIMARY KEY,
-    content_id     INTEGER,
-    overall_score  FLOAT,
-    review_count   INTEGER,
-    positive_ratio FLOAT,
-    trending_score FLOAT,
-    updated_at     TIMESTAMPTZ DEFAULT NOW()
-);
+-- FIX #22: rankings was an orphan table in the live DB — 7 columns, zero code
+-- references across all Python, TypeScript, and YAML files. Dropped.
+DROP TABLE IF EXISTS rankings;
 
 -- ── Manual trailer overrides ──────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS trailer_overrides (
