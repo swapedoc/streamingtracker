@@ -1,32 +1,7 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- StreamIQ — Database Schema
--- Run once in Supabase SQL editor to set up all required tables and columns.
--- Safe to re-run on an existing DB — all CREATE/ALTER statements are idempotent.
---
--- VERIFIED against live DB snapshot (2026-03-04).
--- Differences from previous schema.sql:
---   LIVE-1  : content.id is SERIAL (INTEGER), not BIGSERIAL — fixed
---   LIVE-2  : reviews.id is SERIAL (INTEGER), not BIGSERIAL — fixed
---   LIVE-3  : scores.id is SERIAL (INTEGER), not BIGSERIAL — fixed
---   LIVE-4  : reviews.content_id is INTEGER nullable with FK to content(id) — fixed
---   LIVE-5  : scores.content_id is INTEGER nullable with FK to content(id) — fixed
---   LIVE-6  : content timestamps are TIMESTAMPTZ in live (not plain TIMESTAMP) — fixed
---   LIVE-7  : reviews.created_at and updated_at are both TIMESTAMPTZ in live — fixed
---   LIVE-8  : scores.computed_at is TIMESTAMPTZ in live — fixed
---   LIVE-9  : watchlist has poster TEXT, score NUMERIC, added_at TIMESTAMPTZ
---             content_type NOT NULL, notified NOT NULL — all added
---   LIVE-10 : watchlist unique constraint is (browser_id, title, content_type) — fixed
---   LIVE-11 : discover_content.category is nullable with no default — fixed
---   LIVE-12 : Added all indexes present in live but missing from schema:
---             idx_content_discovery, idx_content_tmdb,
---             idx_discover_content_stream_url, idx_scores_category,
---             idx_watchlist_unnotified
---   LIVE-13 : match_content() updated to match live signature + added tv_genre
---   LIVE-14 : RLS policies renamed to match live (public_read) + watchlist
---             policies added, content/reviews/scores RLS enabled
---   LIVE-15 : idx_discover_genre and idx_discover_embedding were in old
---             schema.sql but missing from live DB — kept here so fresh
---             deployments get them; run separately on live if needed
+-- Run once in Supabase SQL editor to set up all tables, indexes, RLS, and the
+-- match_content() pgvector RPC. Safe to re-run — all statements are idempotent.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 -- Enable pgvector extension (required for embeddings + match_content RPC)
@@ -70,15 +45,32 @@ CREATE INDEX IF NOT EXISTS idx_discover_platform          ON discover_content(pl
 CREATE INDEX IF NOT EXISTS idx_discover_genre             ON discover_content(genre);
 CREATE INDEX IF NOT EXISTS idx_discover_content_stream_url ON discover_content(stream_url);
 -- ivfflat index for pgvector cosine similarity (match_content RPC / Vibe Search).
--- Requires ~1000+ rows to be useful. Increase lists= as catalog grows.
-CREATE INDEX IF NOT EXISTS idx_discover_embedding ON discover_content
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+-- Requires at least 1 row with a non-NULL embedding to build — will fail on an
+-- empty table. Wrapped in a DO block so a fresh deployment doesn't crash here;
+-- re-run the CREATE INDEX statement manually once embeddings are populated.
+-- Increase lists= as catalog grows (rule of thumb: sqrt(row_count)).
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename  = 'discover_content'
+          AND indexname  = 'idx_discover_embedding'
+    ) THEN
+        IF EXISTS (
+            SELECT 1 FROM discover_content WHERE embedding IS NOT NULL LIMIT 1
+        ) THEN
+            EXECUTE 'CREATE INDEX idx_discover_embedding ON discover_content
+                     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)';
+        ELSE
+            RAISE NOTICE 'idx_discover_embedding skipped — no embeddings yet. Re-run after generate_embeddings.py populates the column.';
+        END IF;
+    END IF;
+END $$;
 
 
 -- ── content ───────────────────────────────────────────────────────────────────
 -- Watch Now titles — enriched with reviews, scores, and stream URLs.
--- id is SERIAL (INTEGER) matching live DB sequence.
--- Timestamps are TIMESTAMPTZ matching live DB types.
 CREATE TABLE IF NOT EXISTS content (
     id               SERIAL PRIMARY KEY,
     tmdb_id          INTEGER   NOT NULL,
@@ -118,14 +110,11 @@ CREATE INDEX IF NOT EXISTS idx_content_tmdb      ON content(tmdb_id);
 
 -- ── reviews ───────────────────────────────────────────────────────────────────
 -- One row per review source per title.
--- id is SERIAL (INTEGER) matching live DB.
--- content_id is INTEGER nullable with FK to content(id) ON DELETE CASCADE.
--- updated_at exists in live DB, was missing from old schema.sql.
 CREATE TABLE IF NOT EXISTS reviews (
     id                   SERIAL  PRIMARY KEY,
     content_id           INTEGER REFERENCES content(id) ON DELETE CASCADE,
     source               TEXT    NOT NULL,                 -- 'youtube'|'reddit'|'rotten_tomatoes'|'tmdb'
-    source_id            TEXT    NOT NULL,
+    source_id            TEXT    NOT NULL,                 -- NOT NULL required: NULL != NULL in unique constraints, allowing duplicate inserts
     source_url           TEXT,
     reviewer             TEXT,
     reviewer_subscribers INTEGER,
@@ -148,9 +137,6 @@ CREATE INDEX IF NOT EXISTS idx_reviews_content ON reviews(content_id);
 
 -- ── scores ────────────────────────────────────────────────────────────────────
 -- One row per content title — computed by ScoreComputer.
--- id is SERIAL (INTEGER) matching live DB.
--- content_id is INTEGER nullable with FK to content(id) ON DELETE CASCADE.
--- computed_at is TIMESTAMPTZ matching live DB.
 CREATE TABLE IF NOT EXISTS scores (
     id               SERIAL  PRIMARY KEY,
     content_id       INTEGER UNIQUE REFERENCES content(id) ON DELETE CASCADE,
@@ -177,19 +163,17 @@ CREATE INDEX IF NOT EXISTS idx_scores_category ON scores(category);
 
 -- ── watchlist ─────────────────────────────────────────────────────────────────
 -- User-tracked titles (anonymous, keyed by browser fingerprint).
--- poster and score columns exist in live DB (from earlier version, unused by code).
--- added_at is the ordering column used by index.html (not created_at).
--- content_type and notified are NOT NULL in live DB.
+-- poster and score exist in the live DB but are unused by code.
 CREATE TABLE IF NOT EXISTS watchlist (
     id               BIGSERIAL PRIMARY KEY,
     browser_id       TEXT        NOT NULL,
     title            TEXT        NOT NULL,
     content_type     TEXT        NOT NULL  DEFAULT 'movie',  -- 'movie' | 'tv'
     tmdb_id          TEXT,                                    -- nullable string from frontend
-    poster           TEXT,                                    -- exists in live, unused by code
+    poster           TEXT,                                    -- unused by code
     platform         TEXT,                                    -- NULL until streaming confirmed
     stream_url       TEXT,
-    score            NUMERIC,                                 -- exists in live, unused by code
+    score            NUMERIC,                                 -- unused by code
     notified         BOOLEAN     NOT NULL  DEFAULT FALSE,
     added_at         TIMESTAMPTZ NOT NULL  DEFAULT NOW(),     -- ordering column used by frontend
     telegram_chat_id TEXT,
@@ -265,6 +249,8 @@ ALTER TABLE reviews ADD COLUMN IF NOT EXISTS youtube_weight       FLOAT   DEFAUL
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS engagement_score     FLOAT   DEFAULT 0;
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS updated_at           TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE reviews ALTER COLUMN review_text TYPE TEXT;
+-- Enforce NOT NULL on source_id — safe to apply because 0 NULL rows exist in live.
+ALTER TABLE reviews ALTER COLUMN source_id SET NOT NULL;
 
 -- scores additions
 ALTER TABLE scores ADD COLUMN IF NOT EXISTS rt_score   FLOAT DEFAULT 0;
@@ -291,6 +277,7 @@ ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS poster           TEXT;
 ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS score            NUMERIC;
 ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS added_at         TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT;
+ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS created_at       TIMESTAMPTZ DEFAULT NOW();
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -320,6 +307,11 @@ CREATE POLICY public_read ON scores FOR SELECT USING (true);
 
 -- watchlist: anon can read/insert/delete their own rows; only service_role can update
 -- (watchlist_alerts.py uses service_role key to set platform/stream_url/notified)
+--
+-- Without Supabase Auth, rows cannot be cryptographically scoped to a user —
+-- USING(true) relies on the frontend filtering by browser_id. To fully isolate
+-- rows, integrate Supabase Auth and change USING(true) to
+-- USING(auth.uid()::text = browser_id) after migrating browser_id to auth.uid().
 ALTER TABLE watchlist ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS anon_select_own ON watchlist;
 DROP POLICY IF EXISTS anon_insert     ON watchlist;
@@ -332,15 +324,15 @@ CREATE POLICY service_update  ON watchlist FOR UPDATE TO service_role
     USING (true) WITH CHECK (true);
 
 -- sync_state: RLS intentionally OFF (public timestamp, no sensitive data)
--- trailer_overrides: RLS intentionally OFF (read-only reference data)
+-- trailer_overrides: public read — read-only reference data used by enrich_trailers_cron.py
+ALTER TABLE trailer_overrides ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS public_read ON trailer_overrides;
+CREATE POLICY public_read ON trailer_overrides FOR SELECT USING (true);
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- match_content() — pgvector RPC for Vibe Search
--- Called by edgefunction.ts (smart-endpoint) and index.html vibeSearch().
---
--- Matches live DB signature exactly, with tv_genre added (missing from live —
--- run this CREATE OR REPLACE to update the live function in one shot).
+-- Called by edgefunction.ts and index.html vibeSearch().
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION match_content(
     query_embedding vector(3072),

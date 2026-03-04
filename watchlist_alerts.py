@@ -210,14 +210,16 @@ def send_telegram(chat_id: str, message: str) -> bool:
         print(f'  ❌ Telegram error for chat {chat_id}: {e}')
         return False
 
-def send_user_alerts(hits: list[dict]) -> tuple[int, int]:
+def send_user_alerts(hits: list[dict]) -> tuple[int, int, set[str]]:
     """
     Send individual Telegram alerts to each user who tracked a title.
     Each row has its own telegram_chat_id — users get only their titles.
-    Returns (sent_count, failed_count).
+    Returns (sent_count, failed_count, sent_chat_ids).
+    sent_chat_ids: set of chat_ids whose message was delivered successfully.
+    Caller uses this to mark only those rows notified=True (Bug #8 fix).
     """
     if not hits:
-        return 0, 0
+        return 0, 0, set()
 
     # Group hits by telegram_chat_id so each user gets one message
     from collections import defaultdict
@@ -234,14 +236,13 @@ def send_user_alerts(hits: list[dict]) -> tuple[int, int]:
         print(f'  ⚠️  {no_tg} row(s) had no telegram_chat_id — skipped')
 
     sent = failed = 0
+    sent_chat_ids: set[str] = set()
     for chat_id, user_hits in by_user.items():
         lines = ['🎬 <b>StreamIQ — Available to Stream Now!</b>\n']
         for h in user_hits:
             emoji = '🎥' if h['content_type'] != 'tv' else '📺'
-            # FIX NEW-14: only include the URL line when a stream_url is actually
-            # present. When JustWatch returns no standardWebURL the old code
-            # rendered an empty line in the Telegram message — no clickable link,
-            # just blank whitespace below the platform name.
+            # Only add the URL line when a stream_url is present — JustWatch
+            # sometimes returns no standardWebURL, and an empty line looks broken.
             url_line = f'   {h["stream_url"]}\n' if h.get('stream_url') else ''
             lines.append(
                 f'{emoji} <b>{h["title"]}</b>\n'
@@ -252,12 +253,13 @@ def send_user_alerts(hits: list[dict]) -> tuple[int, int]:
         ok = send_telegram(chat_id, '\n'.join(lines))
         if ok:
             sent += 1
+            sent_chat_ids.add(chat_id)
             print(f'  📨 Sent to chat {chat_id} ({len(user_hits)} title(s))')
         else:
             failed += 1
             print(f'  ❌ Failed to send to chat {chat_id}')
 
-    return sent, failed
+    return sent, failed, sent_chat_ids
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -305,12 +307,8 @@ def main():
         if len(batch) < 1000:
             break
 
-    # FIX WA1: rows_with_platform had a platform set but notified=False.
-    # These are titles the user tracked directly from Watch Now — they are
-    # already streaming, so we know the platform/url immediately.
-    # BUG: the old code silently marked them notified=True with NO Telegram
-    # alert. Users who tracked from Watch Now never received any notification.
-    # FIX: queue them into watch_now_hits first, send alerts, THEN mark notified.
+    # Rows with a platform already set were tracked directly from Watch Now —
+    # they're already streaming. Send Telegram alerts first, then mark notified.
     watch_now_hits = []
     if rows_with_platform:
         print(f'  📺 {len(rows_with_platform)} Watch Now item(s) tracked — alerting users now...')
@@ -324,18 +322,18 @@ def main():
                     'telegram_chat_id': r['telegram_chat_id'],
                 })
         if watch_now_hits:
-            sent_wn, failed_wn = send_user_alerts(watch_now_hits)
+            sent_wn, failed_wn, sent_chat_ids_wn = send_user_alerts(watch_now_hits)
             print(f'  ✅ Watch Now alerts: sent to {sent_wn} user(s)' +
                   (f', ❌ {failed_wn} failed' if failed_wn else ''))
         else:
             print(f'  ℹ️  {len(rows_with_platform)} Watch Now item(s) had no telegram_chat_id — skipped')
-        # FIX WA3: only mark notified for rows whose alert was actually sent.
-        # Rows with no telegram_chat_id are marked immediately (nothing to send).
-        # Rows whose Telegram send failed stay un-notified so they retry next run.
+            sent_chat_ids_wn = set()
+        # Only mark rows whose specific chat_id succeeded — a partial Telegram
+        # failure (some sent, some failed) must not mark the failed rows as notified.
         ids_no_tg   = [r['id'] for r in rows_with_platform if not r.get('telegram_chat_id')]
-        ids_alerted = [r['id'] for r in rows_with_platform if r.get('telegram_chat_id') and r.get('platform')]
-        # If every single alert failed, don't mark anyone notified
-        ids_to_mark = ids_no_tg if (watch_now_hits and sent_wn == 0 and failed_wn > 0) else ids_no_tg + ids_alerted
+        ids_alerted = [r['id'] for r in rows_with_platform
+                       if r.get('telegram_chat_id') in sent_chat_ids_wn]
+        ids_to_mark = ids_no_tg + ids_alerted
         if ids_to_mark:
             db.table('watchlist').update({'notified': True}).in_('id', ids_to_mark).execute()
             print(f'  ✅ Marked {len(ids_to_mark)} Watch Now items as notified')
@@ -345,11 +343,8 @@ def main():
         print('\n' + '='*60)
         return
 
-    # FIX WA2: deduplicate by (title, content_type) not just title.
-    # Keying by title alone meant that if User A tracked "Flesh and Blood" as
-    # a movie and User B tracked it as a TV show, only ONE JustWatch query
-    # fired — using User A's content_type. User B got the wrong result or missed
-    # the alert entirely. Tuple key fixes the lookup for both users independently.
+    # Deduplicate by (title, content_type) — different users may track the same
+    # title as both a movie and a TV show, requiring separate JustWatch lookups.
     unique: dict[tuple, list] = {}
     for r in rows:
         key = (r['title'], r.get('content_type') or 'movie')
@@ -358,12 +353,11 @@ def main():
     print(f'  📋 {len(rows)} rows ({len(unique)} unique titles) to check against JustWatch\n')
 
     hits         = []   # titles that are now streaming
-    hit_row_ids  = []   # watchlist row IDs for found titles — marked notified AFTER alerts sent
+    hit_row_ids  = {}   # row_id → telegram_chat_id; only rows with a successful send are marked notified
     misses       = []   # still not found
     errors       = []   # API failures
 
     def check_one(title_rows):
-        # FIX WA2: key is now (title, content_type) tuple — unpack both parts
         (title, ct), row_list = title_rows
         try:
             plat, url = check_streaming(title, ct)
@@ -398,9 +392,9 @@ def main():
                         }).eq('id', row['id']).execute()
                     except Exception as e:
                         print(f'     ❌ DB update failed for row {row["id"]}: {e}')
-                # Collect IDs so we can bulk-mark notified after alerts are sent
+                # Collect row_id → chat_id so we can mark only successfully-alerted rows
                 for row in row_list:
-                    hit_row_ids.append(row['id'])
+                    hit_row_ids[row['id']] = row.get('telegram_chat_id')
                     hits.append({'title': title, 'content_type': row.get('content_type','movie'),
                                  'platform': plat, 'stream_url': url or '',
                                  'telegram_chat_id': row.get('telegram_chat_id')})
@@ -413,15 +407,17 @@ def main():
 
     if hits:
         print(f'\n📨 Sending Telegram alerts for {len(hits)} row(s)...')
-        sent, failed = send_user_alerts(hits)
+        sent, failed, sent_chat_ids = send_user_alerts(hits)
         print(f'  ✅ Sent to {sent} user(s)' + (f', ❌ {failed} failed' if failed else ''))
-        # Mark notified=True only after alerts have been dispatched.
-        # If Telegram fails for all users, hit_row_ids is still populated so
-        # the rows stay un-notified and will be retried on the next cron run.
-        if hit_row_ids:
+        # Only mark rows as notified if their specific chat_id succeeded.
+        ids_to_notify = [
+            row_id for row_id, chat_id in hit_row_ids.items()
+            if chat_id in sent_chat_ids
+        ] if isinstance(hit_row_ids, dict) else hit_row_ids
+        if ids_to_notify:
             try:
-                db.table('watchlist').update({'notified': True}).in_('id', hit_row_ids).execute()
-                print(f'  ✅ Marked {len(hit_row_ids)} row(s) as notified')
+                db.table('watchlist').update({'notified': True}).in_('id', ids_to_notify).execute()
+                print(f'  ✅ Marked {len(ids_to_notify)} row(s) as notified')
             except Exception as e:
                 print(f'  ❌ Failed to mark rows notified: {e}')
     else:

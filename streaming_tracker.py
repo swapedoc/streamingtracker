@@ -875,23 +875,30 @@ class DiscoverFlow:
                        f"/{tmdb_id}/watch/providers")
                 params = {'api_key': self.api_key}
                 for attempt in range(3):
+                    rate_limited = False
                     try:
                         async with provider_sem:
                             async with session.get(url, params=params, timeout=10) as resp:
                                 if resp.status == 429:
-                                    await asyncio.sleep(2 ** attempt)
-                                    continue
-                                if resp.status != 200:
+                                    # Flag 429 but do NOT sleep here — sleeping inside
+                                    # the semaphore blocks all other concurrent provider
+                                    # checks for the full backoff duration.
+                                    rate_limited = True
+                                elif resp.status != 200:
                                     prov_done += 1
                                     return tmdb_id, []
-                                data = await resp.json()
-                                india = data.get('results', {}).get('IN', {})
-                                ids = [p['provider_id']
-                                       for p in india.get('flatrate', [])]
-                                prov_done += 1
-                                if prov_done % 50 == 0 or prov_done == total_prov:
-                                    print(f"   🔍 Providers: {prov_done}/{total_prov}...")
-                                return tmdb_id, ids
+                                else:
+                                    data = await resp.json()
+                                    india = data.get('results', {}).get('IN', {})
+                                    ids = [p['provider_id']
+                                           for p in india.get('flatrate', [])]
+                                    prov_done += 1
+                                    if prov_done % 50 == 0 or prov_done == total_prov:
+                                        print(f"   🔍 Providers: {prov_done}/{total_prov}...")
+                                    return tmdb_id, ids
+                        # Semaphore released — now safe to sleep on 429
+                        if rate_limited:
+                            await asyncio.sleep(2 ** attempt)
                     except Exception as e:
                         print(f"   ⚡️ Provider fetch error for tmdb_id {tmdb_id} (attempt {attempt+1}): {e}")
                         if attempt < 2:
@@ -969,9 +976,6 @@ class DiscoverFlow:
             if cat.startswith('genre_'):
                 # Extract bucket genre label e.g. 'genre_horror' -> 'Horror'
                 bucket_genre = cat.replace('genre_', '').capitalize()
-                # Sci-Fi special case
-                if bucket_genre == 'Sci-fi':
-                    bucket_genre = 'Sci-Fi'
                 resolved = item.get('genre') or ''
                 # Penalise if the resolved genre doesn't match the bucket
                 if resolved.lower() != bucket_genre.lower():
@@ -1426,18 +1430,15 @@ class RedditIngester:
 
             client_id     = os.getenv('REDDIT_CLIENT_ID')
             client_secret = os.getenv('REDDIT_CLIENT_SECRET')
-            username      = os.getenv('REDDIT_USERNAME', '')
-            password      = os.getenv('REDDIT_PASSWORD', '')
 
             if not client_id or not client_secret:
                 return None
 
             ua = 'python:streamiq.scraper:v1.0 (by /u/stream_tracker_bot)'
-            payload = (
-                {'grant_type': 'password', 'username': username, 'password': password}
-                if username and password
-                else {'grant_type': 'client_credentials'}
-            )
+            # client_credentials is always used — REDDIT_USERNAME/REDDIT_PASSWORD are
+            # never set in update_data.yml so the password grant was unreachable in CI.
+            # Removed to avoid confusion (Bug #18).
+            payload = {'grant_type': 'client_credentials'}
             try:
                 r = requests.post(
                     cls._TOKEN_URL,
@@ -1778,7 +1779,9 @@ class CriticReviewScraper:
 
     def __init__(self, debug: bool = False):
         self.sentiment = SentimentAnalyzer()
-        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        # Note: no self.db — CriticReviewScraper only scrapes external sites and
+        # returns rows to the caller (_critics_sync). DB writes happen in
+        # AsyncWatchNowPipeline._bulk_save_reviews via its own client.
         self.debug = debug
         self.session = requests.Session()
         self.session.headers.update({
@@ -1840,7 +1843,7 @@ class CriticReviewScraper:
         return float(m.group(1)) if m else None
 
     # ------------------------------------------------------------------
-    # MAIN ENTRY POINT
+    # scrape_rotten_tomatoes — primary entry point for critic scores
     # ------------------------------------------------------------------
     def scrape_rotten_tomatoes(self, title: str, media_type: str,
                                 year: Optional[int] = None) -> Optional[Dict]:
@@ -2031,10 +2034,6 @@ class CriticReviewScraper:
         }
 
 
-    # ------------------------------------------------------------------
-    # MAIN ENTRY POINT
-    # ------------------------------------------------------------------
-
 # ============================================================================
 # SCORING ENGINE
 # ============================================================================
@@ -2059,9 +2058,9 @@ class ScoringEngine:
     @staticmethod
     def get_dynamic_weights(release_year: int) -> Dict:
         """Dynamic weights based on content age (Recency Decay).
-        youtube + reddit + imdb always sum to 1.0.
-        When reddit data is absent the caller uses youtube + imdb only,
-        scaling them back to 1.0 proportionally.
+        youtube + reddit + rt + imdb always sum to 1.0.
+        When RT is absent the caller rescales the remaining three proportionally.
+        When reddit data is also absent the caller rescales youtube + imdb only.
         """
         current_year = datetime.now().year
         age = current_year - release_year if release_year else 10
@@ -2352,6 +2351,7 @@ class AsyncWatchNowPipeline:
         self.yt_key    = Config.YOUTUBE_API_KEY
         self.tmdb_key  = Config.TMDB_API_KEY
         self.db        = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        self._db_lock  = threading.Lock()   # guards self.db reassignment in _bulk_save_reviews
         self.sentiment = SentimentAnalyzer()
         self.scoring   = ScoringEngine()
         self.reddit    = RedditIngester() if Config.USE_REDDIT else None
@@ -2538,6 +2538,9 @@ class AsyncWatchNowPipeline:
             self._aget("https://www.googleapis.com/youtube/v3/channels",
                        {'part': 'statistics', 'id': channel_id, 'key': self.yt_key})
         )
+        # videos.list + channels.list each cost 1 quota unit — track them
+        # so the budget guard in _yt_search reflects actual consumption.
+        self._yt_quota_used += 2
         s = {}
         if vdata and vdata.get('items'):
             st = vdata['items'][0].get('statistics', {})
@@ -2760,24 +2763,34 @@ class AsyncWatchNowPipeline:
         for source, batch in by_source.items():
             for attempt in range(3):
                 try:
-                    self.db.table('reviews').upsert(batch, on_conflict='source,source_id').execute()
+                    with self._db_lock:
+                        db = self.db
+                    db.table('reviews').upsert(batch, on_conflict='source,source_id').execute()
                     break
                 except Exception as e:
                     err = str(e).lower()
                     is_conn = any(x in err for x in ('disconnect','connection','reset','timeout'))
                     if attempt < 2 and is_conn:
                         time.sleep(2 * (attempt + 1))
-                        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+                        # Acquire lock before swapping self.db so no thread
+                        # reads a half-initialised client during reconnect.
+                        new_db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+                        with self._db_lock:
+                            self.db = new_db
                     else:
                         for r in batch:
                             for r_att in range(3):
                                 try:
-                                    self.db.table('reviews').upsert(r, on_conflict='source,source_id').execute()
+                                    with self._db_lock:
+                                        db = self.db
+                                    db.table('reviews').upsert(r, on_conflict='source,source_id').execute()
                                     break
                                 except Exception as re:
                                     if r_att < 2 and any(x in str(re).lower() for x in ('disconnect','connection','reset')):
                                         time.sleep(1.5 * (r_att + 1))
-                                        self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+                                        new_db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+                                        with self._db_lock:
+                                            self.db = new_db
                                     else:
                                         print(f"   ⚡️ Review DB upsert error: {re}")
                         break
@@ -2835,6 +2848,13 @@ class AsyncWatchNowPipeline:
                                          tmdb_id, media_type, title, year)),
                 return_exceptions=True
             )
+
+            # Log any source that raised — keeps program flow intact but makes
+            # scraper failures visible instead of silently producing 0 reviews.
+            _source_names = ('youtube', 'tmdb', 'reddit', 'critics', 'details')
+            for _name, _result in zip(_source_names, (yt_rows, tmdb_rows, reddit_rows, critic_rows, details)):
+                if isinstance(_result, Exception):
+                    print(f"   ⚡️ {title[:30]} [{_name}] raised: {type(_result).__name__}: {_result}")
 
             # Patch content row with runtime + trailer if we got them
             if isinstance(details, dict) and any(v is not None for v in details.values()):

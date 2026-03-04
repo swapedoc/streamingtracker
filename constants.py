@@ -21,6 +21,7 @@ PLATFORMS = {
 JUSTWATCH_PLATFORM_MAP = {
     'nfx':  ('Netflix',      'https://www.netflix.com'),
     'prv':  ('Prime Video',  'https://www.primevideo.com'),
+    'pva':  ('Prime Video',  'https://www.primevideo.com'),  # Prime Video ad-supported tier
     'jhs':  ('Jiohotstar',   'https://www.jiohotstar.com'),  # current live shortName
     'hst':  ('Jiohotstar',   'https://www.jiohotstar.com'),  # legacy Hotstar
     'dnp':  ('Jiohotstar',   'https://www.jiohotstar.com'),  # legacy Disney+ (merged)
@@ -31,8 +32,9 @@ JUSTWATCH_PLATFORM_MAP = {
 }
 
 # Priority order for JustWatch offer selection (most preferred first)
+# prv before pva — prefer paid subscription tier over ad-supported for the same platform.
 # All Jiohotstar shortNames are grouped — whichever appears first in offers wins.
-JUSTWATCH_PRIORITY = ['nfx', 'prv', 'jhs', 'hst', 'dnp', 'hot', 'jio', 'atp', 'mxs']
+JUSTWATCH_PRIORITY = ['nfx', 'prv', 'pva', 'jhs', 'hst', 'dnp', 'hot', 'jio', 'atp', 'mxs']
 
 # ── Movie genre IDs → our label ───────────────────────────────────────────────
 

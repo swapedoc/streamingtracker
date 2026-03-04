@@ -139,14 +139,16 @@ def _yt_search(queries: list, cap: int) -> str | None:
                     _yt_quota_blown = True
                     print(f"\n   ⚠️  YouTube cap reached ({cap} searches = {cap*100:,} units) — skipping remaining")
                     return None
-                _yt_calls_made += 1
-
+            # Increment quota counter after the HTTP call — incrementing before
+            # would burn a slot on network exceptions without an actual API call.
             r = _get_session().get(
                 'https://www.googleapis.com/youtube/v3/search',
                 params={'part': 'snippet', 'q': q, 'type': 'video',
                         'maxResults': 8, 'order': 'relevance', 'key': YOUTUBE_API_KEY},
                 timeout=10,
             )
+            with _yt_lock:
+                _yt_calls_made += 1
             if r.status_code == 403:
                 with _yt_lock:
                     _yt_quota_blown = True
@@ -246,9 +248,16 @@ def enrich_one(row: dict, yt_cap: int, dry_run: bool) -> dict:
     time.sleep(TMDB_SLEEP)   # gentle rate limit per worker
 
     # ── Runtime ───────────────────────────────────────────────────────────────
+    # For TV: also fetch if seasons or episode_count are missing — a show may
+    # have episode_runtime already set from a previous run but still be missing
+    # those fields if the TMDb call was incomplete.
     needs_runtime = (
         (media_type == 'movie' and not row.get('runtime')) or
-        (media_type == 'tv'    and not row.get('episode_runtime'))
+        (media_type == 'tv'    and (
+            not row.get('episode_runtime') or
+            not row.get('seasons') or
+            not row.get('episode_count')
+        ))
     )
     if needs_runtime:
         rt = _get_runtime(tmdb_id, media_type)
@@ -300,11 +309,8 @@ def main():
 
     if not TMDB_API_KEY:
         print("❌ Missing TMDB_API_KEY in .env"); sys.exit(1)
-    # FIX ET1: check SUPABASE_URL/KEY before calling create_client().
-    # Without this, passing None to create_client() throws a cryptic TypeError
-    # deep inside the Supabase client constructor with no indication of which
-    # secret is missing. This is especially confusing in GitHub Actions where
-    # a missing secret silently becomes an empty string rather than raising early.
+    # Check env vars before calling create_client() — passing None throws a
+    # cryptic TypeError inside the Supabase constructor with no hint of what's missing.
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("❌ Missing SUPABASE_URL or SUPABASE_KEY in .env"); sys.exit(1)
     if not YOUTUBE_API_KEY:
@@ -319,7 +325,7 @@ def main():
     all_rows = []
     for start in range(0, 50_000, 1000):
         page = db.table('discover_content').select(
-            'id, tmdb_id, title, release_year, content_type, trailer_id, runtime, episode_runtime'
+            'id, tmdb_id, title, release_year, content_type, trailer_id, runtime, episode_runtime, seasons, episode_count'
         ).range(start, start + 999).execute()
         if not page.data:
             break
@@ -361,7 +367,11 @@ def main():
         needs_trailer = args.force or not r.get('trailer_id')
         needs_runtime = (
             (r.get('content_type') == 'movie' and not r.get('runtime')) or
-            (r.get('content_type') == 'tv'    and not r.get('episode_runtime'))
+            (r.get('content_type') == 'tv'    and (
+                not r.get('episode_runtime') or
+                not r.get('seasons') or
+                not r.get('episode_count')
+            ))
         )
         if needs_trailer or needs_runtime:
             to_do.append(r)
