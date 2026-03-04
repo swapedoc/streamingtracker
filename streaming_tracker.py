@@ -1384,7 +1384,7 @@ class RedditIngester:
         Mirrors the YT cache pattern — avoids hammering r/bollywood on every run.
         """
         try:
-            cutoff = (datetime.now() - timedelta(hours=self.REDDIT_CACHE_TTL_HRS)).isoformat()
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=self.REDDIT_CACHE_TTL_HRS)).isoformat()
             # Paginate — Supabase silently caps at 1000 rows without this.
             # 5 comments × 200 titles = 1000 rows; any larger catalog silently
             # truncates the cache and causes re-scraping on every run.
@@ -2440,7 +2440,7 @@ class AsyncWatchNowPipeline:
         We reconstruct enough to skip the search call for titles already in DB.
         """
         try:
-            cutoff = (datetime.now() - timedelta(hours=self.YT_CACHE_TTL_HRS)).isoformat()
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=self.YT_CACHE_TTL_HRS)).isoformat()
             # Paginate — Supabase silently caps at 1000 rows without this.
             all_rows = []
             for start in range(0, 100_000, 1000):
@@ -2971,7 +2971,7 @@ def cleanup_old_data(days_old=7):
     print(f"\n🧹 Cleaning up Watch Now data older than {days_old} days...")
     db = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
-    cutoff_date = (datetime.now() - timedelta(days=days_old)).isoformat()
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
 
     spinner = Spinner("Scanning for old data").start()
     try:
