@@ -217,6 +217,12 @@ def gql(query, variables, retries=3):
                 if 'errors' in data:
                     return None
                 return data
+            if r.status_code == 429:
+                # JustWatch rate limit — back off progressively, same as watchlist_alerts.py
+                wait = 5 * (attempt + 1)
+                print(f'   ⚡️ JustWatch rate limited (429) — waiting {wait}s')
+                time.sleep(wait)
+                continue
             if attempt < retries - 1:
                 continue
             return None

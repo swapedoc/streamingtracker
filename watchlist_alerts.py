@@ -339,9 +339,10 @@ def main():
 
     print(f'  📋 {len(rows)} rows ({len(unique)} unique titles) to check against JustWatch\n')
 
-    hits    = []   # titles that are now streaming
-    misses  = []   # still not found
-    errors  = []   # API failures
+    hits         = []   # titles that are now streaming
+    hit_row_ids  = []   # watchlist row IDs for found titles — marked notified AFTER alerts sent
+    misses       = []   # still not found
+    errors       = []   # API failures
 
     def check_one(title_rows):
         # FIX WA2: key is now (title, content_type) tuple — unpack both parts
@@ -368,18 +369,20 @@ def main():
 
             if plat:
                 print(f'✅ {plat}')
-                # Update each matching row in DB
+                # Update platform + stream_url only — do NOT set notified=True here.
+                # notified is set in bulk AFTER send_user_alerts() succeeds so that
+                # a Telegram failure never silently swallows the alert (mirrors WA1 fix).
                 for row in row_list:
                     try:
                         db.table('watchlist').update({
-                            'platform':  plat,
+                            'platform':   plat,
                             'stream_url': url or '',
-                            'notified':  True,
                         }).eq('id', row['id']).execute()
                     except Exception as e:
                         print(f'     ❌ DB update failed for row {row["id"]}: {e}')
-                # Each row gets its own entry so per-user grouping works
+                # Collect IDs so we can bulk-mark notified after alerts are sent
                 for row in row_list:
+                    hit_row_ids.append(row['id'])
                     hits.append({'title': title, 'content_type': row.get('content_type','movie'),
                                  'platform': plat, 'stream_url': url or '',
                                  'telegram_chat_id': row.get('telegram_chat_id')})
@@ -394,6 +397,15 @@ def main():
         print(f'\n📨 Sending Telegram alerts for {len(hits)} row(s)...')
         sent, failed = send_user_alerts(hits)
         print(f'  ✅ Sent to {sent} user(s)' + (f', ❌ {failed} failed' if failed else ''))
+        # Mark notified=True only after alerts have been dispatched.
+        # If Telegram fails for all users, hit_row_ids is still populated so
+        # the rows stay un-notified and will be retried on the next cron run.
+        if hit_row_ids:
+            try:
+                db.table('watchlist').update({'notified': True}).in_('id', hit_row_ids).execute()
+                print(f'  ✅ Marked {len(hit_row_ids)} row(s) as notified')
+            except Exception as e:
+                print(f'  ❌ Failed to mark rows notified: {e}')
     else:
         print('\n💤 No new arrivals — no Telegram message sent')
 

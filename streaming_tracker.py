@@ -684,11 +684,16 @@ class DiscoverFlow:
         # TMDb uses different genre IDs for TV vs movies.
         # e.g. Action movie=28, Action TV=10759 (Action & Adventure)
         #      Sci-Fi movie=878, Sci-Fi TV=10765 (Sci-Fi & Fantasy)
-        # All others (Horror=27, Thriller=53, Comedy=35, Drama=18, Romance=10749)
-        # are either the same ID or have no direct TV equivalent so we use movie ID.
+        # Horror (27) and Thriller (53) are movie-only IDs — TMDb's TV taxonomy
+        # has no Horror genre at all, and no Thriller. Querying TV with these IDs
+        # returns empty results. Crime (80) is the closest TV equivalent to Thriller;
+        # Mystery (9648) is the closest to Horror.
+        # Comedy (35), Drama (18), Romance (10749) are shared IDs — no override needed.
         TV_GENRE_ID_OVERRIDE = {
-            'Action': 10759,   # Action & Adventure
-            'Sci-Fi': 10765,   # Sci-Fi & Fantasy
+            'Action':   10759,  # Action & Adventure
+            'Sci-Fi':   10765,  # Sci-Fi & Fantasy
+            'Thriller': 80,     # Crime — closest TV equivalent to Thriller
+            'Horror':   9648,   # Mystery — closest TV equivalent to Horror
         }
         for genre_name in Config.DISCOVER_ENABLED_GENRES:
             genre_id = Config.GENRES.get(genre_name)
@@ -1043,7 +1048,7 @@ class DiscoverFlow:
                 stale_ids = [
                     row['id'] for row in existing
                     if (row['tmdb_id'], row['platform']) not in fresh_keys
-                    and row.get('source', 'tracker') == 'tracker'  # never delete bulk catalog rows
+                    and (row.get('source') or 'tracker') == 'tracker'  # never delete bulk catalog rows
                 ]
 
                 if not stale_ids:
@@ -2837,17 +2842,23 @@ class AsyncWatchNowPipeline:
             if isinstance(details, dict) and any(v is not None for v in details.values()):
                 try:
                     yt_fallback = details.pop('_yt_fallback', False)
-                    self.db.table('content').update(details).eq('id', content_id).execute()
+                    # FIX BUG-3: strip None values before writing — an UPDATE with None
+                    # translates to SQL NULL and overwrites previously saved good data
+                    # (e.g. a trailer_id found last run gets set back to NULL if TMDb
+                    # returns nothing today). Only write fields that have actual values.
+                    clean_details = {k: v for k, v in details.items() if v is not None}
+                    if clean_details:
+                        self.db.table('content').update(clean_details).eq('id', content_id).execute()
                     trailer_note = ''
-                    if details.get('trailer_id'):
+                    if clean_details.get('trailer_id'):
                         src = '🔍YT' if yt_fallback else '🎬TMDb'
-                        trailer_note = f" {src}={details['trailer_id'][:8]}.."
+                        trailer_note = f" {src}={clean_details['trailer_id'][:8]}.."
                     runtime_note = ''
-                    if details.get('runtime'):
-                        h, m = divmod(details['runtime'], 60)
+                    if clean_details.get('runtime'):
+                        h, m = divmod(clean_details['runtime'], 60)
                         runtime_note = f" ⏱ {h}h{m:02d}m"
-                    elif details.get('seasons'):
-                        runtime_note = f" ⏱ {details['seasons']}s"
+                    elif clean_details.get('seasons'):
+                        runtime_note = f" ⏱ {clean_details['seasons']}s"
                     if runtime_note or trailer_note:
                         print(f"   📐 {title[:35]}{runtime_note}{trailer_note}")
                 except Exception as e:
