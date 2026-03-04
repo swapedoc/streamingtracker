@@ -1380,12 +1380,21 @@ class RedditIngester:
         """
         try:
             cutoff = (datetime.now() - timedelta(hours=self.REDDIT_CACHE_TTL_HRS)).isoformat()
-            rows = (self.db.table('reviews')
-                       .select('content_id')
-                       .eq('source', 'reddit')
-                       .gte('created_at', cutoff)
-                       .execute().data or [])
-            self._reddit_cached_ids = {r['content_id'] for r in rows}
+            # Paginate — Supabase silently caps at 1000 rows without this.
+            # 5 comments × 200 titles = 1000 rows; any larger catalog silently
+            # truncates the cache and causes re-scraping on every run.
+            all_rows = []
+            for start in range(0, 100_000, 1000):
+                page = (self.db.table('reviews')
+                           .select('content_id')
+                           .eq('source', 'reddit')
+                           .gte('created_at', cutoff)
+                           .range(start, start + 999)
+                           .execute().data or [])
+                all_rows.extend(page)
+                if len(page) < 1000:
+                    break
+            self._reddit_cached_ids = {r['content_id'] for r in all_rows}
             if self._reddit_cached_ids:
                 print(f"   📦 Reddit cache: {len(self._reddit_cached_ids)} titles already have fresh reviews — will skip")
         except Exception as e:
@@ -2427,11 +2436,19 @@ class AsyncWatchNowPipeline:
         """
         try:
             cutoff = (datetime.now() - timedelta(hours=self.YT_CACHE_TTL_HRS)).isoformat()
-            rows = (self.db.table('reviews')
-                       .select('source_id,reviewer,review_text,content_id')
-                       .eq('source', 'youtube')
-                       .gte('created_at', cutoff)  # reviews table only has created_at (confirmed live schema)
-                       .execute().data or [])
+            # Paginate — Supabase silently caps at 1000 rows without this.
+            all_rows = []
+            for start in range(0, 100_000, 1000):
+                page = (self.db.table('reviews')
+                           .select('source_id,reviewer,review_text,content_id')
+                           .eq('source', 'youtube')
+                           .gte('created_at', cutoff)
+                           .range(start, start + 999)
+                           .execute().data or [])
+                all_rows.extend(page)
+                if len(page) < 1000:
+                    break
+            rows = all_rows
             # Group by content_id -> list of video stubs
             from collections import defaultdict
             by_content: dict = defaultdict(list)
@@ -2693,6 +2710,10 @@ class AsyncWatchNowPipeline:
                     'confidence': comment['confidence'],
                     'weighted_sentiment': comment['sentiment'] * comment['confidence']
                 })
+        # Mark this content_id as cached for the rest of this run so a second
+        # platform entry for the same title doesn't trigger a duplicate scrape.
+        if self.reddit and content_id:
+            self.reddit._reddit_cached_ids.add(content_id)
         return rows
 
     def _critics_sync(self, content_id: int, title: str,
@@ -2943,12 +2964,16 @@ def cleanup_old_data(days_old=7):
 
     spinner = Spinner("Scanning for old data").start()
     try:
-        # Collect ALL old content (movies + TV) — both are refreshed every run
+        # Use updated_at not created_at — a title that's been trending continuously
+        # for 8+ days has created_at > 7 days old but updated_at is refreshed on
+        # every upsert, so it correctly stays alive as long as it keeps appearing
+        # in the trending feed. created_at would delete + re-insert it every run,
+        # losing all accumulated reviews unnecessarily.
         all_old = []
         _page = 0
         while True:
             batch = db.table('content').select('id') \
-                .lt('created_at', cutoff_date) \
+                .lt('updated_at', cutoff_date) \
                 .range(_page * 1000, (_page + 1) * 1000 - 1).execute()
             if not batch.data:
                 break

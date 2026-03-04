@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS scores (
     positive_ratio   FLOAT,
     is_polarizing    BOOLEAN   DEFAULT FALSE,
     sentiment_std    FLOAT     DEFAULT 0,
+    rt_score         FLOAT     DEFAULT 0,        -- Rotten Tomatoes weighted sentiment score
     vibe_score       FLOAT,                      -- 1.0–10.0 genre-specific intensity
     vibe_label       TEXT,                       -- e.g. 'Scare Factor', 'Laugh Meter'
     computed_at      TIMESTAMPTZ DEFAULT NOW()   -- FIX SD1: was 'created_at' in old schema
@@ -242,6 +243,9 @@ ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS hindi_dub        BOOLEAN D
 ALTER TABLE discover_content ADD COLUMN IF NOT EXISTS embedding        vector(3072);
 
 ALTER TABLE reviews ALTER COLUMN review_text TYPE TEXT;
+
+-- rt_score: Rotten Tomatoes weighted sentiment (confirmed in live DB)
+ALTER TABLE scores ADD COLUMN IF NOT EXISTS rt_score FLOAT DEFAULT 0;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- FIX EF6 / SD5: match_content RPC — REQUIRED by edgefunction.ts (Vibe Search)
