@@ -2109,7 +2109,8 @@ document.addEventListener('mousemove', e => {
 
 /* ── FILTER ── */
 function _inTimeBucket(mins, bucket) {
-  if (bucket === 'all' || mins == null) return bucket === 'all';
+  if (bucket === 'all') return true;
+  if (mins == null) return true; // no runtime data — don't hide the title
   if (bucket === 'quick')  return mins < 100;
   if (bucket === 'medium') return mins >= 100 && mins < 300;
   if (bucket === 'long')   return mins >= 300 && mins < 1200;
