@@ -1550,6 +1550,16 @@ const SUPA_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIs
 let W = [];
 let D = [];
 
+function _esc(v) {
+  if (v === null || v === undefined) return '';
+  return String(v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function _safe(v) {
   if (v === null || v === undefined) return '';
   if (typeof v === 'number' && isNaN(v)) return '';
@@ -1602,13 +1612,15 @@ async function loadData() {
     _updateDiscTabBadge();
     // Only re-fetch if server data is newer than our cache
     try {
-      const { data, error } = await supabase
-        .from('sync_state')
-        .select('last_updated')
-        .single();
+      const pingRes = await fetch(
+        `${SUPA_URL}/rest/v1/sync_state?select=last_updated&limit=1`,
+        { headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON } }
+      );
+      const pingData = pingRes.ok ? await pingRes.json() : [];
+      const row = Array.isArray(pingData) && pingData[0];
 
-      if (!error && data) {
-        const serverTs = new Date(data.last_updated).getTime();
+      if (row && row.last_updated) {
+        const serverTs = new Date(row.last_updated).getTime();
         const cacheTs  = parseInt(localStorage.getItem(CACHE_KEY_TS) || '0');
         if (serverTs > cacheTs) {
           _loadFromNetwork(true);
@@ -1910,7 +1922,7 @@ function renderWatchGenrePills() {
   function tvPillHtml(g) {
     const isOn = wGenre === g.label;
     return `<button class="pill${isOn?' on':''}" data-g="${g.label}"
-      onclick="sG('${g.label.replace(/'/g,"\'")}',this)">${g.label}</button>`;
+      onclick="sG('${g.label.replace(/'/g,"\\'")}',this)">${g.label}</button>`;
   }
   function filmPillHtml(g) {
     const isOn = wGenre === g.val;
@@ -2114,7 +2126,7 @@ function makeCard(d, i, wIdx) {
     <div class="card-meta">
       <span class="card-plat" style="--pl:${platCol}"></span>
       <span class="card-type">${d.type==='tv'?'Series':'Film'} · ${d.year||'—'}</span>
-      ${d.genre ? `<span class="card-genre" style="color:${GC[d.genre]||'#888'}">${d.genre}</span>` : ''}
+      ${d.genre ? `<span class="card-genre" style="color:${GC[d.genre]||'#888'}">${_esc(d.genre)}</span>` : ''}
     </div>
     ${d.binge ? `<div class="card-binge">⏱ ${d.binge}${d.trailer_id ? ' · <span style="color:var(--gold);opacity:.7">▶ Trailer</span>' : ''}</div>` : (d.trailer_id ? `<div class="card-binge" style="color:var(--gold);opacity:.7">▶ Trailer available</div>` : '')}
     ${d.vibe_score != null ? (() => {
@@ -2548,7 +2560,7 @@ function _discMakeCard(d, i) {
     + '<a href="' + tmdb + '" target="_blank" style="text-decoration:none;color:inherit;display:flex;flex-direction:column;flex:1">'
     + '<div class="dc-poster" style="position:relative;">' + posterInner + '</div>'
     + '<div class="dc-body">'
-    + '<div class="dc-title">' + d.title + '</div>'
+    + '<div class="dc-title">' + _esc(d.title) + '</div>'
     + '<div class="dc-sub">' + subType + ' \u00b7 ' + d.year + ' \u00b7 ' + d.platform + '</div>'
     + bingeHtml + leavingHtml
     + '<div class="dc-foot">' + ratingHtml
@@ -2875,7 +2887,7 @@ function _updateDiscTabBadge() {
   const btn = document.querySelector('.tab[onclick*="disc"]');
   if (!btn) return;
   // Strip any previous badge before re-rendering
-  btn.innerHTML = btn.textContent.replace(/\s*\(\d+\)/, '').trim();
+  btn.innerHTML = 'Discover';
   if (count > 0) {
     btn.innerHTML = `Discover <span style="
       background:#FF4455;color:#fff;font-size:0.48rem;font-weight:700;
@@ -3018,7 +3030,7 @@ function _renderWlGrid() {
       <div class="wl-card">
         ${poster}
         <div class="wl-info">
-          <div class="wl-title">${r.title}</div>
+          <div class="wl-title">${_esc(r.title)}</div>
           <div class="wl-meta">${typeLabel}</div>
           ${statusHtml}
           ${tgHtml}
