@@ -580,6 +580,73 @@ body:has(.dc:hover) #cursor-ring {
   color: var(--sc, var(--t-dim));
 }
 
+/* positive ratio on card */
+.card-ratio {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 6px;
+}
+.card-ratio-bar {
+  flex: 1; height: 2px; background: var(--v3);
+  border-radius: 1px; overflow: hidden;
+}
+.card-ratio-fill {
+  height: 100%; border-radius: 1px;
+  transition: width 1s var(--ease), background-color 0.5s;
+}
+.card-ratio-val {
+  font-family: var(--mono); font-size: 0.52rem;
+  color: var(--t-dim); letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+/* panel review quotes */
+.pp-quotes {
+  margin-bottom: 28px;
+}
+.pp-quotes-hd {
+  font-family: var(--mono); font-size: 0.52rem;
+  letter-spacing: 0.24em; text-transform: uppercase;
+  color: var(--t-void); margin-bottom: 16px;
+  display: flex; align-items: center; gap: 10px;
+}
+.pp-quotes-hd::after { content: ''; flex: 1; height: 1px; background: var(--v3); }
+.pp-quote {
+  padding: 14px 16px; margin-bottom: 10px;
+  background: var(--v2); border-left: 2px solid var(--qc, var(--v4));
+  position: relative;
+}
+.pp-quote-text {
+  font-family: var(--body); font-style: italic;
+  font-size: 0.82rem; line-height: 1.7;
+  color: var(--t-mid);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pp-quote-meta {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 8px;
+}
+.pp-quote-source {
+  font-family: var(--mono); font-size: 0.5rem;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--qc, var(--t-void));
+}
+.pp-quote-reviewer {
+  font-family: var(--mono); font-size: 0.5rem;
+  color: var(--t-void); letter-spacing: 0.04em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 160px;
+}
+.pp-quote-sentiment {
+  margin-left: auto; font-family: var(--mono); font-size: 0.5rem;
+  letter-spacing: 0.08em;
+}
+.pp-quotes-loading {
+  font-family: var(--mono); font-size: 0.52rem;
+  color: var(--t-void); letter-spacing: 0.12em;
+  padding: 12px 0; text-align: center;
+}
+
 /* ═══════════════════════════════════════════════════
    OVERLAY + DETAIL PANEL
 ═══════════════════════════════════════════════════ */
@@ -1509,6 +1576,10 @@ body:has(.dc:hover) #cursor-ring {
         oninput="wlSearchFilter(this.value)"
         autocomplete="off" spellcheck="false"/>
     </div>
+    <select id="wl-type-sel" class="sort-sel" style="flex-shrink:0">
+      <option value="movie">Film</option>
+      <option value="tv">Series</option>
+    </select>
     <button class="wl-add-btn" onclick="wlAddNew()">+ Track New Title</button>
   </div>
 
@@ -1673,6 +1744,8 @@ async function _loadFromNetwork(isBackgroundRefresh) {
         reddit:           parseFloat(row.reddit_score) || 0,
         imdb:             parseFloat(row.imdb_score) || 0,
         reviews:          parseInt(row.review_count) || 0,
+        positive_ratio:   row.positive_ratio != null ? parseFloat(row.positive_ratio) : null,
+        content_id:       row.content_id || null,
         stream_url:       _safe(c.stream_url),
         hindi_dub:        !!c.hindi_dub,
         binge:            _vibeBinge(c),
@@ -2143,6 +2216,16 @@ function makeCard(d, i, wIdx) {
       <div class="score-line-fill" style="width:${pct}%;background:${col};box-shadow:0 0 8px ${col}"></div>
     </div>
     <div class="card-verdict">${verdict(d.score)}</div>
+    ${d.positive_ratio != null && d.reviews > 0 ? (() => {
+      const pct = Math.round(d.positive_ratio * 100);
+      const ratioCol = pct >= 70 ? '#4CAF50' : pct >= 45 ? '#E8C547' : '#FF4455';
+      return `<div class="card-ratio">
+        <div class="card-ratio-bar">
+          <div class="card-ratio-fill" style="width:${pct}%;background-color:${ratioCol}"></div>
+        </div>
+        <span class="card-ratio-val">${pct}% pos</span>
+      </div>`;
+    })() : ''}
   </div>
 </div>`;
 }
@@ -2277,11 +2360,16 @@ function openPanel(d, clickedEl) {
         <div class="pm-item">Type<span>${d.type==='tv'?'Series':'Film'}</span></div>
         <div class="pm-item">Year<span>${d.year||'—'}</span></div>
         <div class="pm-item">Reviews<span>${d.reviews}</span></div>
-        ${d.genre ? `<div class="pm-item">Genre<span style="color:${GC[d.genre]||'#888'}">${d.genre}</span></div>` : ''}
-        ${d.binge ? `<div class="pm-item">Runtime<span>${d.binge}</span></div>` : ''}
+        ${d.positive_ratio != null && d.reviews > 0 ? (() => {
+          const pct = Math.round(d.positive_ratio * 100);
+          const ratioCol = pct >= 70 ? '#4CAF50' : pct >= 45 ? '#E8C547' : '#FF4455';
+          return `<div class="pm-item">Positive<span style="color:${ratioCol}">${pct}%</span></div>`;
+        })() : ''}
+        ${d.genre ? `<div class="pm-item">Genre<span style="color:${GC[d.genre]||'#888'}">${_esc(d.genre)}</span></div>` : ''}
+        ${d.binge ? `<div class="pm-item">Runtime<span>${_esc(d.binge)}</span></div>` : ''}
         ${d.vibe_score != null ? (() => {
           const vibeCol = d.vibe_score >= 8 ? '#FF4040' : d.vibe_score >= 6 ? '#E8C547' : '#4DBFFF';
-          return `<div class="pm-item">${d.vibe_label||'Vibe'}<span style="color:${vibeCol}">${d.vibe_score.toFixed(1)}/10</span></div>`;
+          return `<div class="pm-item">${_esc(d.vibe_label||'Vibe')}<span style="color:${vibeCol}">${d.vibe_score.toFixed(1)}/10</span></div>`;
         })() : ''}
       </div>
       <div class="panel-score-section">
@@ -2297,6 +2385,7 @@ function openPanel(d, clickedEl) {
         </div>
       </div>
       <div class="panel-overview" id="pp-overview"></div>
+      <div class="pp-quotes" id="pp-quotes" style="display:none"></div>
       <div class="breakdown">
         <div class="breakdown-hd">Score Breakdown</div>
         ${brow('YouTube',  d.yt,     '#FF4040')}
@@ -2359,6 +2448,9 @@ function openPanel(d, clickedEl) {
   overlayEl.classList.add('on');
   document.body.style.overflow = 'hidden';
 
+  // Fetch review quotes async — don't block panel opening
+  _loadPanelQuotes(d);
+
   // Push URL hash so the browser Back button closes the panel instead of exiting the app
   const hashId = d.tmdb_id ? `movie-${d.tmdb_id}` : `movie-${encodeURIComponent(d.title)}`;
   window.history.pushState({ panelOpen: true, hashId }, '', `#${hashId}`);
@@ -2369,6 +2461,7 @@ function closeP(fromPopstate) {
   p.classList.remove('on');
   document.getElementById('overlay').classList.remove('on');
   document.body.style.overflow = '';
+  _quotesActiveId = null;  // cancel any in-flight quote fetch
   // Clean up URL hash — but only if WE are closing, not the popstate handler
   // (avoids double history entry)
   if (!fromPopstate && window.location.hash.startsWith('#movie-')) {
@@ -2386,6 +2479,76 @@ function closeP(fromPopstate) {
 }
 
 let _trailerActive = false;
+
+/* ── PANEL REVIEW QUOTES ── */
+let _quotesActiveId = null;   // tracks which content_id is currently expected
+
+async function _loadPanelQuotes(d) {
+  const el = document.getElementById('pp-quotes');
+  if (!el) return;
+
+  // Need content_id to query reviews table
+  if (!d.content_id || !SUPA_URL || !SUPA_ANON) { el.style.display = 'none'; return; }
+
+  // Mark which panel open this fetch belongs to
+  const thisId = d.content_id;
+  _quotesActiveId = thisId;
+
+  // Show loading state immediately
+  el.style.display = '';
+  el.innerHTML = `<div class="pp-quotes-loading">Loading reviews…</div>`;
+
+  try {
+    const r = await fetch(
+      `${SUPA_URL}/rest/v1/reviews?content_id=eq.${d.content_id}` +
+      `&review_text=not.is.null&order=engagement_score.desc&limit=3` +
+      `&select=review_text,source,reviewer,sentiment`,
+      { headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON } }
+    );
+    if (!r.ok) throw new Error('fetch failed');
+    const rows = await r.json();
+
+    // Bail if user opened a different panel while this was in-flight
+    if (_quotesActiveId !== thisId) return;
+    const elNow = document.getElementById('pp-quotes');
+    if (!elNow) return;
+    if (!Array.isArray(rows) || !rows.length) { elNow.style.display = 'none'; return; }
+
+    const SOURCE_COLOR = { youtube: '#FF4040', reddit: '#FF7A30' };
+
+    const quotesHtml = rows.map(q => {
+      const src    = (q.source || '').toLowerCase();
+      const qcol   = SOURCE_COLOR[src] || 'var(--t-void)';
+      // sentiment is an integer: treat 1 = positive, 0 = mixed, -1 = negative
+      const sent   = q.sentiment;
+      const sentCol   = sent == null ? '' : sent >= 1 ? '#4CAF50' : sent === 0 ? '#E8C547' : '#FF4455';
+      const sentLabel = sent == null ? '' : sent >= 1 ? '↑ Positive' : sent === 0 ? '~ Mixed' : '↓ Critical';
+      return `<div class="pp-quote" style="--qc:${qcol}">
+        <div class="pp-quote-text" data-qt="${encodeURIComponent(q.review_text || '')}"></div>
+        <div class="pp-quote-meta">
+          <span class="pp-quote-source">${_esc(src || 'review')}</span>
+          ${q.reviewer ? `<span class="pp-quote-reviewer">${_esc(q.reviewer)}</span>` : ''}
+          ${sentLabel ? `<span class="pp-quote-sentiment" style="color:${sentCol}">${sentLabel}</span>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    elNow.innerHTML = `<div class="pp-quotes-hd">What People Are Saying</div>${quotesHtml}`;
+
+    // Fill review text safely via textContent (XSS-safe)
+    elNow.querySelectorAll('.pp-quote-text[data-qt]').forEach(node => {
+      node.textContent = '"' + decodeURIComponent(node.dataset.qt).slice(0, 300) + '"';
+      node.removeAttribute('data-qt');
+    });
+
+  } catch(e) {
+    if (_quotesActiveId === thisId) {
+      const elNow = document.getElementById('pp-quotes');
+      if (elNow) elNow.style.display = 'none';
+    }
+  }
+}
+
 function toggleTrailer(videoId) {
   const tw  = document.getElementById('pp-trailer-wrap');
   const pi  = document.getElementById('pp-poster-img');
@@ -2562,7 +2725,7 @@ function _discMakeCard(d, i) {
     + '<div class="dc-poster" style="position:relative;">' + posterInner + '</div>'
     + '<div class="dc-body">'
     + '<div class="dc-title">' + _esc(d.title) + '</div>'
-    + '<div class="dc-sub">' + subType + ' \u00b7 ' + d.year + ' \u00b7 ' + d.platform + '</div>'
+    + '<div class="dc-sub">' + subType + ' \u00b7 ' + _esc(String(d.year||'')) + ' \u00b7 ' + _esc(d.platform||'—') + '</div>'
     + bingeHtml + leavingHtml
     + '<div class="dc-foot">' + ratingHtml
     + '<span class="dc-tag" style="color:' + catCol + ';border-color:' + catCol + '">' + catLbl + '</span>'
@@ -2835,8 +2998,8 @@ function _makeVibeCard(d, i) {
       data-trailer="${trailId}" data-idx="vb${i}">▶ Trailer</button>` : ''}
   </div>
   <div class="dc-body">
-    <div class="dc-title">${d.title}</div>
-    <div class="dc-sub">${d.content_type==='tv'?'Series':'Film'} · ${d.release_year||''} · ${d.platform||'—'}</div>
+    <div class="dc-title">${_esc(d.title)}</div>
+    <div class="dc-sub">${d.content_type==='tv'?'Series':'Film'} · ${d.release_year||''} · ${_esc(d.platform||'—')}</div>
     ${binge ? `<div class="dc-binge">⏱ ${binge}</div>` : ''}
     ${lBadge}
     <div class="dc-foot">
@@ -3021,7 +3184,7 @@ function _renderWlGrid() {
       : `<div class="wl-poster-ph">🎬</div>`;
     const streaming = r.platform && r.stream_url;
     const statusHtml = streaming
-      ? `<div class="wl-meta wl-status-streaming">✅ On ${r.platform}</div>`
+      ? `<div class="wl-meta wl-status-streaming">✅ On ${_esc(r.platform)}</div>`
       : `<div class="wl-meta wl-status-waiting">⏳ Waiting for streaming</div>`;
     const tgHtml = r.telegram_chat_id
       ? `<div class="wl-meta" style="margin-top:2px">🔔 Alert set</div>`
@@ -3061,21 +3224,26 @@ async function wlRemove(title, btn) {
       if (_trackedTitles) _trackedTitles.delete(title);
       _renderWlGrid();
       showToast('🗑', `"${title}" removed`, 2000);
+    } else {
+      btn.textContent = '✕ Remove';
+      btn.disabled = false;
+      showToast('❌', 'Could not remove — try again', 3000);
     }
   } catch { btn.textContent = '✕ Remove'; btn.disabled = false; }
 }
 
 function wlAddNew() {
   const input = document.getElementById('wl-search-input');
+  const typeSel = document.getElementById('wl-type-sel');
   const title = (input ? input.value : '').trim();
+  const type  = typeSel ? typeSel.value : 'movie';
   if (!title) { showToast('⚠️', 'Type a title first', 2000); return; }
   // Reuse the same modal flow — fake a minimal data object
-  currentPanelData = { title, type: 'movie', tmdb_id: '', poster: '', platform: null, stream_url: null, score: null };
+  currentPanelData = { title, type, tmdb_id: '', poster: '', platform: null, stream_url: null, score: null };
   _openTrackModal(currentPanelData);
 }
 
-// After successful track from modal, refresh watchlist tab if it's open
-const _origConfirmTrack = _confirmTrack;
+// _confirmTrack already refreshes the watchlist tab when it's visible (see implementation above)
 
 /* ── WATCHLIST ── */
 
