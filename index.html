@@ -1441,6 +1441,12 @@ body:has(.dc:hover) #cursor-ring {
     <div id="watch-genre-pills" style="display:contents"></div>
     <div class="ctrl-sep"></div>
     <button class="pill" id="w-hindi-btn" onclick="toggleHindiW(this)">🎙 Hindi Dub</button>
+    <div class="ctrl-sep"></div>
+    <button class="pill on" data-wt="all"    onclick="sTm('all',this)">⏱ Any Length</button>
+    <button class="pill" data-wt="quick"     onclick="sTm('quick',this)">&lt; 100m</button>
+    <button class="pill" data-wt="medium"    onclick="sTm('medium',this)">1–5h</button>
+    <button class="pill" data-wt="long"      onclick="sTm('long',this)">5–20h</button>
+    <button class="pill" data-wt="binge"     onclick="sTm('binge',this)">20h+</button>
     <div class="search-wrap">
       <span class="search-icon">↳</span>
       <input class="search" placeholder="Search titles…" oninput="wSr(this.value)"/>
@@ -1548,6 +1554,12 @@ body:has(.dc:hover) #cursor-ring {
     <div class="ctrl-sep"></div>
     <button class="pill" id="d-hindi-btn" onclick="toggleHindiD(this)">🎙 Hindi Dub</button>
     <button class="pill" id="d-leaving-btn" onclick="toggleLeavingD(this)">⏳ Last Chance</button>
+    <div class="ctrl-sep"></div>
+    <button class="pill on" data-dt2="all"   onclick="sdTm('all',this)">⏱ Any Length</button>
+    <button class="pill" data-dt2="quick"    onclick="sdTm('quick',this)">&lt; 100m</button>
+    <button class="pill" data-dt2="medium"   onclick="sdTm('medium',this)">1–5h</button>
+    <button class="pill" data-dt2="long"     onclick="sdTm('long',this)">5–20h</button>
+    <button class="pill" data-dt2="binge"    onclick="sdTm('binge',this)">20h+</button>
   </div>
   <div class="ctrl">
     <div id="disc-cat-pills" style="display:contents"></div>
@@ -1763,6 +1775,7 @@ async function _loadFromNetwork(isBackgroundRefresh) {
         stream_url:       _safe(c.stream_url),
         hindi_dub:        !!c.hindi_dub,
         binge:            _vibeBinge(c),
+        total_mins:       _totalMins(c),
         trailer_id:       _safe(c.trailer_id),
         genre:            _safe(c.genre),
         tv_genre:         _safe(c.tv_genre),
@@ -1807,6 +1820,7 @@ async function _loadFromNetwork(isBackgroundRefresh) {
       stream_url:    _safe(r.stream_url),
       hindi_dub:     !!r.hindi_dub,
       binge:         _vibeBinge(r),
+      total_mins:    _totalMins(r),
       trailer_id:    _safe(r.trailer_id),
       leaving_date:  _safe(r.leaving_date),
       content_type:  _safe(r.content_type),
@@ -2075,7 +2089,7 @@ function verdict(s) {
 function pc(p) { return PC[p] || '#666'; }
 
 /* ── STATE ── */
-let wPlat='all', wType='all', wSearch='', wSort='score', wGenre='all';
+let wPlat='all', wType='all', wSearch='', wSort='score', wGenre='all', wTime='all';
 let dCat='all',  dSearch='';
 
 /* ── CUSTOM CURSOR ── */
@@ -2094,6 +2108,15 @@ document.addEventListener('mousemove', e => {
 })();
 
 /* ── FILTER ── */
+function _inTimeBucket(mins, bucket) {
+  if (bucket === 'all' || mins == null) return bucket === 'all';
+  if (bucket === 'quick')  return mins < 100;
+  if (bucket === 'medium') return mins >= 100 && mins < 300;
+  if (bucket === 'long')   return mins >= 300 && mins < 1200;
+  if (bucket === 'binge')  return mins >= 1200;
+  return true;
+}
+
 function getFW() {
   let base = W;
   if (window._wFilter === 'worth') base = base.filter(d => d.score >= 60);
@@ -2105,10 +2128,9 @@ function getFW() {
     .filter(d => wGenre==='all' || (() => {
       if (wType === 'tv')    return d.tv_genre === wGenre;
       if (wType === 'movie') return d.genre    === wGenre;
-      // "All Types" — a genre pill could be a film genre (stored in d.genre)
-      // OR a TV genre (stored in d.tv_genre). Check both so neither goes missing.
       return d.genre === wGenre || d.tv_genre === wGenre;
     })())
+    .filter(d => wTime==='all' || _inTimeBucket(d.total_mins, wTime))
     .filter(d => !wSearch || d.title.toLowerCase().includes(wSearch.toLowerCase()))
     .sort((a,b) => {
       if (wSort==='score') return b.score - a.score;
@@ -2625,12 +2647,14 @@ function _schedD(fn, delay) { clearTimeout(_dTimer); _dTimer = setTimeout(fn, de
 function sP(v,b) { wPlat=v; document.querySelectorAll('[data-p]').forEach(x=>x.classList.toggle('on',x===b)); _schedW(renderWatch); }
 function sT(v,b) { wType=v; wGenre='all'; document.querySelectorAll('[data-t]').forEach(x=>x.classList.toggle('on',x===b)); renderWatchGenrePills(); _schedW(renderWatch); }
 function sG(v,b) { wGenre=v; renderWatchGenrePills(); _schedW(renderWatch); }
+function sTm(v,b) { wTime=v; document.querySelectorAll('[data-wt]').forEach(x=>x.classList.toggle('on',x===b)); _schedW(renderWatch); }
 function wSr(v)  { wSearch=v; _schedW(renderWatch, 180); }
 function wSo(v)  { wSort=v; _schedW(renderWatch); }
 
 /* ── DISCOVER ── */
 let dPlat = 'all';
 let dType = 'all';
+let dTime = 'all';
 
 /* Returns days until a YYYY-MM-DD date string, or null if absent/unparseable */
 function _daysUntil(dateStr) {
@@ -2667,6 +2691,7 @@ function getFD() {
     })
     .filter(d => dPlat==='all' || d.platform===dPlat)
     .filter(d => dType==='all' || d.type===dType)
+    .filter(d => dTime==='all' || _inTimeBucket(d.total_mins, dTime))
     .filter(d => !dSearch || d.title.toLowerCase().includes(dSearch.toLowerCase()))
     .sort((a,b) => {
       // When "Last Chance" filter is on, sort by soonest leaving first
@@ -2821,6 +2846,7 @@ function sC(v,b) {
   _schedD(renderDisc);
 }
 function sdP(v,b) { dPlat=v; document.querySelectorAll('[data-dp]').forEach(x=>x.classList.toggle('on',x===b)); _schedD(renderDisc); }
+function sdTm(v,b) { dTime=v; document.querySelectorAll('[data-dt2]').forEach(x=>x.classList.toggle('on',x===b)); _schedD(renderDisc); }
 function sdT(v,b) {
   dType=v;
   dCat='all';  // reset category when type switches — film genres don't apply to series and vice versa
@@ -2963,6 +2989,17 @@ function wPolar() {
 }
 
 /* ── VIBE SEARCH (Edge Function) ── */
+
+function _totalMins(d) {
+  const type = d.content_type || d.type;
+  if (type !== 'tv') {
+    const rt = parseInt(d.runtime);
+    return rt > 0 ? rt : null;
+  }
+  const eps = parseInt(d.episode_count), epRt = parseInt(d.episode_runtime);
+  if (eps > 0 && epRt > 0) return eps * epRt;
+  return null;
+}
 
 function _vibeBinge(d) {
   const type = d.content_type;
