@@ -479,7 +479,7 @@ body:has(.dc:hover) #cursor-ring {
   transition: color 0.3s;
 }
 .score-label {
-  font-family: var(--mono); font-size: 0.38rem;
+  font-family: var(--mono); font-size: 0.52rem;
   letter-spacing: 0.18em; text-transform: uppercase;
   color: var(--t-void); margin-top: 1px;
 }
@@ -490,7 +490,7 @@ body:has(.dc:hover) #cursor-ring {
   display: flex; flex-direction: column; gap: 4px;
 }
 .badge {
-  font-family: var(--mono); font-size: 0.46rem;
+  font-family: var(--mono); font-size: 0.52rem;
   letter-spacing: 0.14em; text-transform: uppercase;
   padding: 3px 7px; border-radius: 1px;
   backdrop-filter: blur(12px);
@@ -534,7 +534,7 @@ body:has(.dc:hover) #cursor-ring {
   color: var(--t-dim); letter-spacing: 0.06em;
 }
 .card-genre {
-  font-family: var(--mono); font-size: 0.48rem;
+  font-family: var(--mono); font-size: 0.52rem;
   letter-spacing: 0.08em; opacity: 0.85;
   display: block; margin-top: 2px;
 }
@@ -546,7 +546,7 @@ body:has(.dc:hover) #cursor-ring {
 }
 
 .card-vibe {
-  font-family: var(--mono); font-size: 0.48rem;
+  font-family: var(--mono); font-size: 0.52rem;
   letter-spacing: 0.08em; margin-bottom: 6px;
   display: flex; align-items: center; gap: 5px;
 }
@@ -803,7 +803,7 @@ body:has(.dc:hover) #cursor-ring {
 
 .panel-track-btn {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 9px 18px; border-radius: 4px; font-size: 0.7rem;
+  padding: 9px 18px; border-radius: 2px; font-size: 0.7rem;
   letter-spacing: 0.1em; text-transform: uppercase;
   font-family: var(--mono); cursor: pointer;
   background: transparent;
@@ -818,7 +818,7 @@ body:has(.dc:hover) #cursor-ring {
 
 /* ── WATCHLIST TAB ── */
 .wl-add-btn {
-  padding: 10px 20px; background: #E8C547; border: none; border-radius: 4px;
+  padding: 10px 20px; background: #E8C547; border: none; border-radius: 1px;
   color: #07070A; font-family: var(--mono); font-size: 0.7rem; font-weight: 700;
   letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
   white-space: nowrap; transition: background .2s; flex-shrink: 0;
@@ -832,17 +832,17 @@ body:has(.dc:hover) #cursor-ring {
 }
 .wl-card {
   background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
-  border-radius: 8px; padding: 16px 18px;
+  border-radius: 2px; padding: 16px 18px;
   display: flex; align-items: center; gap: 14px;
   transition: border-color .2s;
 }
 .wl-card:hover { border-color: rgba(232,197,71,0.3); }
 .wl-poster {
-  width: 44px; height: 64px; object-fit: cover; border-radius: 4px;
+  width: 44px; height: 64px; object-fit: cover; border-radius: 2px;
   background: rgba(255,255,255,0.05); flex-shrink: 0;
 }
 .wl-poster-ph {
-  width: 44px; height: 64px; border-radius: 4px;
+  width: 44px; height: 64px; border-radius: 2px;
   background: rgba(255,255,255,0.05); display: flex;
   align-items: center; justify-content: center;
   font-size: 1.2rem; flex-shrink: 0;
@@ -859,7 +859,7 @@ body:has(.dc:hover) #cursor-ring {
 .wl-remove-btn {
   background: transparent; border: 1px solid rgba(255,68,85,0.25);
   color: #FF4455; font-family: var(--mono); font-size: 0.6rem;
-  letter-spacing: 0.08em; padding: 5px 10px; border-radius: 4px;
+  letter-spacing: 0.08em; padding: 5px 10px; border-radius: 1px;
   cursor: pointer; flex-shrink: 0; transition: all .2s;
 }
 .wl-remove-btn:hover { background: rgba(255,68,85,0.1); border-color: #FF4455; }
@@ -867,7 +867,7 @@ body:has(.dc:hover) #cursor-ring {
 /* ── VIBE SEARCH PANEL ── */
 .vibe-panel {
   border: 1px solid rgba(232,197,71,0.4);
-  border-radius: 10px;
+  border-radius: 2px;
   background: rgba(232,197,71,0.03);
   margin-bottom: 28px;
   overflow: hidden;
@@ -886,13 +886,13 @@ body:has(.dc:hover) #cursor-ring {
 .vibe-panel-icon { font-size: 1.1rem; }
 .vibe-panel-badge {
   background: rgba(232,197,71,0.12); border: 1px solid rgba(232,197,71,0.35);
-  color: #E8C547; font-family: var(--mono); font-size: 0.5rem;
-  letter-spacing: 0.16em; padding: 2px 7px; border-radius: 3px; font-weight: 700;
+  color: #E8C547; font-family: var(--mono); font-size: 0.52rem;
+  letter-spacing: 0.16em; padding: 2px 7px; border-radius: 1px; font-weight: 700;
 }
 .vibe-panel-toggle {
   background: transparent; border: 1px solid rgba(255,255,255,0.1);
   color: #555; font-family: var(--mono); font-size: 0.58rem;
-  letter-spacing: 0.1em; padding: 5px 12px; border-radius: 4px;
+  letter-spacing: 0.1em; padding: 5px 12px; border-radius: 1px;
   cursor: pointer; transition: all .2s; white-space: nowrap;
 }
 .vibe-panel-toggle:hover,
@@ -917,7 +917,7 @@ body:has(.dc:hover) #cursor-ring {
 }
 .vibe-step {
   background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 6px; padding: 10px 14px; text-align: center; min-width: 96px;
+  border-radius: 2px; padding: 10px 14px; text-align: center; min-width: 96px;
 }
 .vibe-step-icon { font-size: 1.15rem; margin-bottom: 4px; }
 .vibe-step-label {
@@ -934,7 +934,7 @@ body:has(.dc:hover) #cursor-ring {
 .vibe-example {
   background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
   color: #888; font-family: var(--mono); font-size: 0.58rem;
-  letter-spacing: 0.03em; padding: 5px 11px; border-radius: 20px;
+  letter-spacing: 0.03em; padding: 5px 11px; border-radius: 1px;
   cursor: pointer; transition: all .18s; white-space: nowrap;
 }
 .vibe-example:hover { border-color: rgba(232,197,71,0.5); color: #E8C547; background: rgba(232,197,71,0.06); }
@@ -944,7 +944,7 @@ body:has(.dc:hover) #cursor-ring {
 }
 .vibe-input {
   flex: 1; background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.1); border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.1); border-radius: 2px;
   outline: none; padding: 10px 14px;
   color: #fff; font-family: var(--mono); font-size: 0.74rem;
   letter-spacing: 0.03em; transition: border-color .2s;
@@ -952,7 +952,7 @@ body:has(.dc:hover) #cursor-ring {
 .vibe-input:focus { border-color: rgba(232,197,71,0.55); }
 .vibe-input::placeholder { color: #444; }
 .vibe-btn {
-  background: #E8C547; border: none; border-radius: 6px;
+  background: #E8C547; border: none; border-radius: 1px;
   color: #07070A; font-family: var(--mono); font-size: 0.65rem;
   font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
   padding: 10px 20px; cursor: pointer; flex-shrink: 0; transition: background .2s;
@@ -962,7 +962,7 @@ body:has(.dc:hover) #cursor-ring {
 .vibe-clear-btn {
   background: transparent; border: 1px solid rgba(255,255,255,0.1);
   color: #555; font-family: var(--mono); font-size: 0.6rem;
-  letter-spacing: 0.08em; padding: 9px 14px; border-radius: 6px;
+  letter-spacing: 0.08em; padding: 9px 14px; border-radius: 1px;
   cursor: pointer; flex-shrink: 0; transition: all .2s;
 }
 .vibe-clear-btn:hover { border-color: #888; color: #bbb; }
@@ -1041,7 +1041,7 @@ body:has(.dc:hover) #cursor-ring {
 .dc-trailer-btn {
   position: absolute; bottom: 8px; right: 8px; z-index: 6;
   background: rgba(0,0,0,0.75); border: 1px solid rgba(232,197,71,0.45);
-  color: #E8C547; font-family: var(--mono); font-size: 0.48rem;
+  color: #E8C547; font-family: var(--mono); font-size: 0.52rem;
   letter-spacing: 0.1em; padding: 5px 10px;
   text-transform: uppercase; backdrop-filter: blur(4px);
   transition: all 0.2s; cursor: pointer !important;
@@ -1057,7 +1057,7 @@ body:has(.dc:hover) #cursor-ring {
   font-size: 0.8rem; color: var(--gold);
 }
 .dc-tag {
-  font-family: var(--mono); font-size: 0.48rem;
+  font-family: var(--mono); font-size: 0.52rem;
   letter-spacing: 0.1em; text-transform: uppercase;
   padding: 2px 6px; border-radius: 1px;
   background: rgba(255,255,255,0.03);
@@ -1071,7 +1071,7 @@ body:has(.dc:hover) #cursor-ring {
   color: #FF4455;
   background: rgba(255, 68, 85, 0.1);
   border: 1px solid rgba(255, 68, 85, 0.45);
-  border-radius: 3px; padding: 3px 8px;
+  border-radius: 1px; padding: 3px 8px;
   animation: leavingPulse 2.5s ease-in-out infinite;
 }
 .dc-leaving.soon {   /* ≤ 7 days — more urgent */
@@ -1084,7 +1084,7 @@ body:has(.dc:hover) #cursor-ring {
   50%       { opacity: 0.6; }
 }
 .jw-link {
-  font-family: var(--mono); font-size: 0.48rem;
+  font-family: var(--mono); font-size: 0.52rem;
   letter-spacing: 0.1em; text-transform: uppercase;
   color: var(--gold); text-decoration: none;
   display: block; text-align: center;
@@ -1153,12 +1153,13 @@ body:has(.dc:hover) #cursor-ring {
 .srib.on { background: rgba(255,255,255,0.05); outline: 1px solid var(--c, #fff); }
 .srib.on::before { opacity: 1; height: 2px; }
 
-  /* controls - wrap nicely */
-  .ctrl { gap: 6px; margin-bottom: 20px; }
-  .pill { font-size: 0.5rem; padding: 5px 10px; }
-  .search-wrap { margin-left: 0; width: 100%; }
+  /* controls - structured rows on mobile */
+  .ctrl { gap: 5px; row-gap: 10px; margin-bottom: 20px; }
+  .pill { font-size: 0.52rem; padding: 5px 10px; }
+  .ctrl-sep { display: none; }
+  .search-wrap { order: -1; margin-left: 0; width: 100%; flex-basis: 100%; }
   .search { width: 100% !important; }
-  .sort-sel { font-size: 0.5rem; }
+  .sort-sel { font-size: 0.52rem; }
 
   /* card grid - 2 columns on mobile */
   .watch-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
@@ -1890,8 +1891,8 @@ function renderDiscPills() {
         data-c="tv_genre:${g.label}"
         onclick="sC('tv_genre:${g.label.replace(/'/g,"\\'")}',this)">${g.label}</button>`
     ).join('');
-    const dFilmLabel = filmPills ? '<span style="font-family:var(--mono);font-size:0.46rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Films</span>' : '';
-    const dTvLabel   = tvPills   ? '<span style="font-family:var(--mono);font-size:0.46rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Series</span>' : '';
+    const dFilmLabel = filmPills ? '<span style="font-family:var(--mono);font-size:0.52rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Films</span>' : '';
+    const dTvLabel   = tvPills   ? '<span style="font-family:var(--mono);font-size:0.52rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Series</span>' : '';
     genrePills = dFilmLabel + filmPills + (tvPills ? '<div class="ctrl-sep"></div>' + dTvLabel + tvPills : '');
   }
 
@@ -1950,8 +1951,8 @@ function renderWatchGenrePills() {
     const tPills = TV_GENRE_PILLS
       .filter(g => watchTvGenres.has(g.label))
       .map(tvPillHtml).join('');
-    const filmLabel = fPills ? '<span style="font-family:var(--mono);font-size:0.46rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Films</span>' : '';
-    const tvLabel   = tPills ? '<span style="font-family:var(--mono);font-size:0.46rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Series</span>' : '';
+    const filmLabel = fPills ? '<span style="font-family:var(--mono);font-size:0.52rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Films</span>' : '';
+    const tvLabel   = tPills ? '<span style="font-family:var(--mono);font-size:0.52rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--t-void);padding:0 4px;align-self:center;">Series</span>' : '';
     pills = allGenresBtn + '<div class="ctrl-sep"></div>' + filmLabel + fPills + (tPills ? '<div class="ctrl-sep"></div>' + tvLabel + tPills : '');
   }
 
