@@ -1639,10 +1639,20 @@ function _safe(v) {
 }
 
 // ── CACHE HELPERS ────────────────────────────────────────────────────────
+const CACHE_VERSION = 'v3';  // bump this whenever the data schema changes to auto-clear stale caches
 const CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours in ms — matches Python run frequency
-const CACHE_KEY_W = 'streamiq_W';
-const CACHE_KEY_D = 'streamiq_D';
-const CACHE_KEY_TS = 'streamiq_ts';
+const CACHE_KEY_W  = 'streamiq_W_'  + CACHE_VERSION;
+const CACHE_KEY_D  = 'streamiq_D_'  + CACHE_VERSION;
+const CACHE_KEY_TS = 'streamiq_ts_' + CACHE_VERSION;
+
+// Wipe any cache entries from older versions so they don't accumulate in localStorage
+(function _purgeStaleCacheVersions() {
+  try {
+    Object.keys(localStorage)
+      .filter(k => /^streamiq_(W|D|ts)/.test(k) && !k.endsWith('_' + CACHE_VERSION))
+      .forEach(k => localStorage.removeItem(k));
+  } catch(e) {}
+})();
 
 function _cacheLoad() {
   try {
@@ -1698,6 +1708,9 @@ async function loadData() {
           _loadFromNetwork(true);
         }
         // else: cache is fresh — skip the heavy fetch entirely
+      } else {
+        // sync_state empty or missing column — can't compare, refresh to be safe
+        _loadFromNetwork(true);
       }
     } catch(e) {
       // If ping fails, fall back to fetching anyway
@@ -1746,7 +1759,7 @@ async function _loadFromNetwork(isBackgroundRefresh) {
         rt:               row.rt_score != null ? parseFloat(row.rt_score) : null,
         reviews:          parseInt(row.review_count) || 0,
         positive_ratio:   row.positive_ratio != null ? parseFloat(row.positive_ratio) : null,
-        content_id:       row.content_id || null,
+        content_id:       row.content_id ?? null,
         stream_url:       _safe(c.stream_url),
         hindi_dub:        !!c.hindi_dub,
         binge:            _vibeBinge(c),
