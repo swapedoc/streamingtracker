@@ -1715,7 +1715,7 @@ async function _loadFromNetwork(isBackgroundRefresh) {
 
   // ── Watch Now ────────────────────────────────────────────────────────────
   try {
-    const SCORE_COLS = 'content_id,final_score,label,youtube_score,reddit_score,imdb_score,' +
+    const SCORE_COLS = 'content_id,final_score,label,youtube_score,reddit_score,imdb_score,rt_score,' +
       'review_count,positive_ratio,is_polarizing,vibe_score,vibe_label,' +
       'content(id,tmdb_id,title,platform,content_type,release_year,imdb_rating,' +
       'poster_path,overview,discovery_source,stream_url,hindi_dub,runtime,' +
@@ -1743,6 +1743,7 @@ async function _loadFromNetwork(isBackgroundRefresh) {
         yt:               parseFloat(row.youtube_score) || 0,
         reddit:           parseFloat(row.reddit_score) || 0,
         imdb:             parseFloat(row.imdb_score) || 0,
+        rt:               row.rt_score != null ? parseFloat(row.rt_score) : null,
         reviews:          parseInt(row.review_count) || 0,
         positive_ratio:   row.positive_ratio != null ? parseFloat(row.positive_ratio) : null,
         content_id:       row.content_id || null,
@@ -2391,6 +2392,7 @@ function openPanel(d, clickedEl) {
         ${brow('YouTube',  d.yt,     '#FF4040')}
         ${brow('Reddit',   d.reddit, '#FF7A30')}
         ${brow('IMDb',     d.imdb,   '#E8C547')}
+        ${d.rt != null ? brow('Rotten Tomatoes', d.rt, '#FA320A') : ''}
       </div>
       <div class="panel-actions">
         ${d.stream_url ? (() => {
@@ -2499,14 +2501,22 @@ async function _loadPanelQuotes(d) {
   el.innerHTML = `<div class="pp-quotes-loading">Loading reviews…</div>`;
 
   try {
-    const r = await fetch(
-      `${SUPA_URL}/rest/v1/reviews?content_id=eq.${d.content_id}` +
-      `&review_text=not.is.null&order=engagement_score.desc&limit=3` +
-      `&select=review_text,source,reviewer,sentiment`,
-      { headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON } }
-    );
-    if (!r.ok) throw new Error('fetch failed');
-    const rows = await r.json();
+    // Try ordering by engagement_score first; fall back to created_at if column doesn't exist
+    let rows = null;
+    const baseUrl = `${SUPA_URL}/rest/v1/reviews?content_id=eq.${d.content_id}` +
+      `&review_text=not.is.null&limit=3` +
+      `&select=review_text,source,reviewer,sentiment`;
+    const hdrs = { headers: { apikey: SUPA_ANON, Authorization: 'Bearer ' + SUPA_ANON } };
+
+    const r1 = await fetch(baseUrl + `&order=engagement_score.desc.nullslast`, hdrs);
+    if (r1.ok) {
+      rows = await r1.json();
+    } else {
+      // engagement_score column may not exist — retry without it
+      const r2 = await fetch(baseUrl + `&order=created_at.desc`, hdrs);
+      if (r2.ok) rows = await r2.json();
+      else throw new Error('fetch failed');
+    }
 
     // Bail if user opened a different panel while this was in-flight
     if (_quotesActiveId !== thisId) return;
@@ -2514,7 +2524,7 @@ async function _loadPanelQuotes(d) {
     if (!elNow) return;
     if (!Array.isArray(rows) || !rows.length) { elNow.style.display = 'none'; return; }
 
-    const SOURCE_COLOR = { youtube: '#FF4040', reddit: '#FF7A30' };
+    const SOURCE_COLOR = { youtube: '#FF4040', reddit: '#FF7A30', imdb: '#E8C547', 'rotten tomatoes': '#FA320A' };
 
     const quotesHtml = rows.map(q => {
       const src    = (q.source || '').toLowerCase();
