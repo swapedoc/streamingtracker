@@ -1975,13 +1975,13 @@ function renderDiscPills() {
     ).join('');
   } else if (dType === 'movie') {
     // Films-only — film genre pills, hide empties
-    const discFilmGenres = new Set(D.filter(d => d.genre).map(d => d.genre));
+    const discFilmGenres = new Set(D.filter(d => d.genre && d.type === 'movie').map(d => d.genre));
     genrePills = FILM_GENRE_PILLS.filter(g => discFilmGenres.has(g.label)).map(g =>
       `<button class="pill${dCat===g.cat?' on':''}" data-c="${g.cat}" onclick="sC('${g.cat}',this)">${g.label}</button>`
     ).join('');
   } else {
     // All Types — show both film genres AND TV genres that have content
-    const discFilmGenres = new Set(D.filter(d => d.genre).map(d => d.genre));
+    const discFilmGenres = new Set(D.filter(d => d.genre && d.type === 'movie').map(d => d.genre));
     const discTvGenres   = new Set(D.filter(d => d.tv_genre).map(d => d.tv_genre));
     const filmPills = FILM_GENRE_PILLS.filter(g => discFilmGenres.has(g.label)).map(g =>
       `<button class="pill${dCat===g.cat?' on':''}" data-c="${g.cat}" onclick="sC('${g.cat}',this)">${g.label}</button>`
@@ -2019,7 +2019,7 @@ function renderWatchGenrePills() {
   let pills = '';
 
   const watchTvGenres   = new Set(W.filter(d => d.tv_genre).map(d => d.tv_genre));
-  const watchFilmGenres = new Set(W.filter(d => d.genre).map(d => d.genre));
+  const watchFilmGenres = new Set(W.filter(d => d.genre && d.type === 'movie').map(d => d.genre));
 
   function tvPillHtml(g) {
     const isOn = wGenre === g.label;
@@ -2129,7 +2129,7 @@ function getFW() {
     .filter(d => wGenre==='all' || (() => {
       if (wType === 'tv')    return d.tv_genre === wGenre;
       if (wType === 'movie') return d.genre    === wGenre;
-      return d.genre === wGenre || d.tv_genre === wGenre;
+      return (d.type === 'movie' && d.genre === wGenre) || (d.type === 'tv' && d.tv_genre === wGenre);
     })())
     .filter(d => wTime==='all' || _inTimeBucket(d.total_mins, wTime))
     .filter(d => !wSearch || d.title.toLowerCase().includes(wSearch.toLowerCase()))
@@ -2686,7 +2686,7 @@ function getFD() {
         const label = dCat.replace('genre_', '');
         const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
         const sciLabel = capLabel === 'Sci-fi' ? 'Sci-Fi' : capLabel;
-        return d.genre === sciLabel;
+        return d.type === 'movie' && d.genre === sciLabel;
       }
       return d.category === dCat;
     })
