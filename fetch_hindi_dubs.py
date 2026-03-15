@@ -26,9 +26,11 @@ import time
 import re
 import threading
 import requests
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from supabase import create_client
+from constants import JUSTWATCH_PLATFORM_MAP
 
 load_dotenv()
 
@@ -312,6 +314,8 @@ def _titles_match(search: str, result: str, original: str = '') -> bool:
 
 
 def has_hindi_dub(title: str, content_type: str):
+    """Returns a dict {platform_name: bool} of Hindi dub availability per platform,
+       or None on API error, or empty dict if the title wasn't found on JustWatch."""
     data = gql(SEARCH_Q, {'searchQuery': title, 'country': 'IN', 'first': 5})
     if not data:
         return None
@@ -325,7 +329,7 @@ def has_hindi_dub(title: str, content_type: str):
         return None
 
     if not edges:
-        return False
+        return {}
 
     want = 'Movie' if content_type != 'tv' else 'Show'
 
@@ -341,7 +345,7 @@ def has_hindi_dub(title: str, content_type: str):
             break
 
     if not top_match:
-        return False
+        return {}
 
     offer_data = gql(OFFERS_Q, {'nodeId': top_match, 'country': 'IN'})
     if not offer_data:
@@ -355,7 +359,20 @@ def has_hindi_dub(title: str, content_type: str):
         _send_telegram_alert(msg)
         return None
 
-    return any('hi' in (offer.get('audioLanguages') or []) for offer in offers)
+    # Build per-platform Hindi dub map
+    result = {}
+    for offer in offers:
+        short = (offer.get('package') or {}).get('shortName', '')
+        plat = JUSTWATCH_PLATFORM_MAP.get(short)
+        if plat is None:
+            continue
+        plat_name = plat[0]  # e.g. 'Netflix', 'Jiohotstar'
+        if 'hi' in (offer.get('audioLanguages') or []):
+            result[plat_name] = True
+        elif plat_name not in result:
+            # Only set False if we haven't already found a True for this platform
+            result[plat_name] = False
+    return result
 
 
 # ── Concurrent table processor ───────────────────────────────────────────────
@@ -372,20 +389,29 @@ def process_table(db, table_name, rows, max_workers=MAX_WORKERS):
         print('  ✅ Nothing new to process.')
         return 0, 0, 0, skipped
 
-    print(f'  🚀 {len(to_process)} titles — {max_workers} concurrent workers\n')
+    # Group rows by (title, content_type) so we only call JustWatch once per title,
+    # then apply per-platform results to each row.
+    groups = defaultdict(list)
+    for r in to_process:
+        key = (r.get('title', '?'), r.get('content_type', 'movie'))
+        groups[key].append(r)
 
-    progress = LiveProgress(len(to_process))
+    unique_count = len(groups)
+    print(f'  🚀 {len(to_process)} rows ({unique_count} unique titles) — {max_workers} concurrent workers\n')
 
-    def check_one(item):
-        return item, has_hindi_dub(item.get('title', '?'), item.get('content_type', 'movie'))
+    progress = LiveProgress(unique_count)
+
+    def check_one(key):
+        title, content_type = key
+        return key, has_hindi_dub(title, content_type)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(check_one, item): item for item in to_process}
+        futures = {executor.submit(check_one, key): key for key in groups}
 
         for future in as_completed(futures):
-            item, result = future.result()
-            title  = item.get('title', '?')
-            row_id = item['id']
+            key, result = future.result()
+            title, _ = key
+            rows_for_title = groups[key]
 
             if result is None:
                 progress.log(f'  ⚠️  {title[:55]} — API error')
@@ -393,19 +419,28 @@ def process_table(db, table_name, rows, max_workers=MAX_WORKERS):
                 errors += 1
                 continue
 
-            try:
-                db.table(table_name).update({'hindi_dub': result}).eq('id', row_id).execute()
-                if result:
-                    progress.log(f'  ✅ {title[:60]}')
-                    progress.advance(found=True)
-                    found += 1
-                else:
-                    progress.advance()
-                    not_found += 1
-            except Exception as e:
-                progress.log(f'  ❌ DB error — {title[:40]}: {e}')
-                progress.advance(error=True)
-                errors += 1
+            # result is a dict: {platform_name: bool}
+            any_found = False
+            for row in rows_for_title:
+                row_id   = row['id']
+                platform = row.get('platform', '')
+                has_dub  = result.get(platform, False)
+                try:
+                    db.table(table_name).update({'hindi_dub': has_dub}).eq('id', row_id).execute()
+                    if has_dub:
+                        any_found = True
+                        found += 1
+                    else:
+                        not_found += 1
+                except Exception as e:
+                    progress.log(f'  ❌ DB error — {title[:40]} ({platform}): {e}')
+                    errors += 1
+
+            if any_found:
+                progress.log(f'  ✅ {title[:60]}')
+                progress.advance(found=True)
+            else:
+                progress.advance()
 
     progress.finish()
     return found, not_found, errors, skipped
@@ -421,7 +456,7 @@ def fetch_all_rows(db, table_name):
     while True:
         result = (
             db.table(table_name)
-            .select('id, title, content_type, hindi_dub')
+            .select('id, title, content_type, hindi_dub, platform')
             .range(offset, offset + page_size - 1)
             .execute()
         )
