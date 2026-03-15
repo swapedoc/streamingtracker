@@ -933,13 +933,15 @@ body:has(.dc:hover) #cursor-ring {
 
 /* ── VIBE SEARCH PANEL ── */
 .vibe-panel {
-  border: 1px solid rgba(232,197,71,0.4);
+  border: 1px solid rgba(232,197,71,0.25);
   border-radius: 2px;
   background: rgba(232,197,71,0.03);
-  margin-bottom: 28px;
+  margin-bottom: 20px;
   overflow: hidden;
   box-shadow: 0 0 24px rgba(232,197,71,0.05);
+  display: none;  /* collapsed by default — toggled by vibe trigger */
 }
+.vibe-panel.open { display: block; }
 .vibe-panel-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 20px 12px;
@@ -1032,6 +1034,39 @@ body:has(.dc:hover) #cursor-ring {
   letter-spacing: 0.08em; padding: 9px 14px; border-radius: 1px;
   cursor: pointer; flex-shrink: 0; transition: all .2s;
 }
+
+/* ── DISCOVER SEARCH BAR (promoted) ── */
+.disc-search-row {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 16px;
+}
+.disc-search-main {
+  flex: 1; position: relative;
+}
+.disc-search-main .search-icon {
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+  color: var(--t-mid); font-size: 0.85rem; pointer-events: none;
+  font-family: var(--mono);
+}
+.disc-search-input {
+  width: 100%; box-sizing: border-box;
+  font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.06em;
+  color: #ccc; background: var(--v1);
+  border: 1px solid var(--v3); border-radius: 2px;
+  padding: 11px 16px 11px 38px; outline: none;
+  transition: border-color 0.2s;
+}
+.disc-search-input:focus { border-color: var(--gold-d); color: #fff; }
+.disc-search-input::placeholder { color: #555; }
+.vibe-trigger-btn {
+  background: transparent; border: 1px solid rgba(232,197,71,0.15);
+  color: rgba(232,197,71,0.7); font-family: var(--mono); font-size: 0.58rem;
+  letter-spacing: 0.1em; padding: 7px 14px; border-radius: 2px;
+  cursor: pointer; transition: all .2s; white-space: nowrap;
+  text-transform: uppercase;
+}
+.vibe-trigger-btn:hover { background: rgba(232,197,71,0.08); border-color: rgba(232,197,71,0.4); color: #E8C547; }
+.vibe-trigger-btn.active { background: rgba(232,197,71,0.12); border-color: rgba(232,197,71,0.5); color: #E8C547; }
 .vibe-clear-btn:hover { border-color: #888; color: #bbb; }
 .vibe-results-label {
   color: var(--gold); font-family: var(--mono); font-size: 0.65rem;
@@ -1226,6 +1261,7 @@ body:has(.dc:hover) #cursor-ring {
   .ctrl-sep { display: none; }
   .search-wrap { order: -1; margin-left: 0; width: 100%; flex-basis: 100%; }
   .search { width: 100% !important; }
+  .disc-search-row { flex-direction: column; }
   .sort-sel { font-size: 0.52rem; }
 
   /* card grid - 2 columns on mobile */
@@ -1463,8 +1499,16 @@ body:has(.dc:hover) #cursor-ring {
 <!-- ── DISCOVER TAB ── -->
 <div id="tab-disc" style="display:none">
 
-  <!-- ── VIBE SEARCH PANEL ── -->
-  <div class="vibe-panel">
+  <!-- ── DISCOVER SEARCH BAR ── -->
+  <div class="disc-search-row">
+    <div class="disc-search-main">
+      <span class="search-icon">🔍</span>
+      <input class="disc-search-input" placeholder="Search titles…" oninput="dSr(this.value)" id="disc-search-input"/>
+    </div>
+  </div>
+
+  <!-- ── VIBE SEARCH PANEL (collapsed by default) ── -->
+  <div class="vibe-panel" id="vibe-panel-el">
 
     <!-- Header -->
     <div class="vibe-panel-header">
@@ -1563,10 +1607,9 @@ body:has(.dc:hover) #cursor-ring {
   </div>
   <div class="ctrl">
     <div id="disc-cat-pills" style="display:contents"></div>
-    <div class="search-wrap">
-      <span class="search-icon">↳</span>
-      <input class="search" placeholder="Search…" oninput="dSr(this.value)"/>
-    </div>
+  </div>
+  <div style="text-align:right;margin:-8px 0 10px">
+    <button class="vibe-trigger-btn" id="vibe-trigger" onclick="toggleVibePanel()">🔮 Try AI Vibe Search</button>
   </div>
   <div class="disc-grid" id="dg"></div>
 </div>
@@ -3185,13 +3228,29 @@ async function vibeSearch() {
   }
 }
 
+function toggleVibePanel() {
+  const panel = document.getElementById('vibe-panel-el');
+  const trigger = document.getElementById('vibe-trigger');
+  if (!panel) return;
+  const isOpen = panel.classList.toggle('open');
+  if (trigger) trigger.classList.toggle('active', isOpen);
+  if (isOpen) {
+    const inp = document.getElementById('vibe-input');
+    if (inp) setTimeout(() => inp.focus(), 100);
+  }
+}
+
 function vibeClear() {
   const section  = document.getElementById('vibe-results-section');
   const inp      = document.getElementById('vibe-input');
   const clearBtn = document.getElementById('vibe-clear-btn');
+  const panel    = document.getElementById('vibe-panel-el');
+  const trigger  = document.getElementById('vibe-trigger');
   if (section)  section.style.display = 'none';
   if (inp)      inp.value = '';
   if (clearBtn) clearBtn.style.display = 'none';
+  if (panel)    panel.classList.remove('open');
+  if (trigger)  trigger.classList.remove('active');
 }
 
 // Enter key support
