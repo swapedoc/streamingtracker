@@ -2185,7 +2185,7 @@ function renderStats(data, elId, isDisc) {
     `;
   } else {
     const cats = {};
-    D.forEach(d => cats[d.category] = (cats[d.category]||0)+1);
+    data.forEach(d => cats[d.category] = (cats[d.category]||0)+1);
     const genres = Object.keys(cats).filter(k=>k.startsWith('genre_')).reduce((s,k)=>s+(cats[k]||0),0);
     items = [
       { n: data.length,         l: 'Titles',      c: '#F5F5F0', fn: "sC('all',null);setSribActive('ds',0)"       },
@@ -2457,7 +2457,7 @@ function openPanel(d, clickedEl) {
             }
           }
           return `
-            <button class="tv-send-btn" onclick="copyTitle('${d.title.replace(/'/g, "\\'")}', this)">
+            <button class="tv-send-btn" onclick="copyTitle(this.dataset.t, this)" data-t="${_esc(d.title)}">
               <span class="tv-icon">📋</span>
               Copy Title
             </button>
@@ -2723,7 +2723,7 @@ function _discMakeCard(d, i) {
   var tmdb     = d.tmdb_id ? 'https://www.themoviedb.org/' + typeSlug + '/' + d.tmdb_id : '#';
   var jwUrl    = 'https://www.justwatch.com/in/search?q=' + encodeURIComponent(d.title);
   var days     = _daysUntil(d.leaving_date);
-  var safeTitle = (d.title || '').replace(/'/g, "\\'");
+  var safeTitle = _esc(d.title || '');
 
   var leavingHtml = '';
   if (days !== null && days >= 0) {
@@ -2745,7 +2745,8 @@ function _discMakeCard(d, i) {
 
   var watchBtn = d.stream_url
     ? '<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px"'
-      + ' onclick="event.stopPropagation();copyTitle(\'' + safeTitle + '\', this)">'
+      + ' data-t="' + safeTitle + '"'
+      + ' onclick="event.stopPropagation();copyTitle(this.dataset.t, this)">'
       + '<span class="tv-icon">\ud83d\udccb</span> Copy Title</button>'
       + '<a href="' + dHref + '" target="_blank" class="jw-link" style="color:' + platCol + '">'
       + '&#9654; Watch on ' + d.platform + '</a>'
@@ -2801,7 +2802,7 @@ function _discAppendNextBatch(el, anchor) {
 function renderDisc() {
   window._discDirty = false;
   _discData = getFD();
-  renderStats(D, 'ds', true);
+  renderStats(_discData, 'ds', true);
   _updateDiscTabBadge();
 
   const el = document.getElementById('dg');
@@ -2869,11 +2870,15 @@ function showTab(t, btn) {
 
 
 /* ── INIT ── */
-const now = new Date();
-const ts = now.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})
-         + ' · ' + now.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
-document.getElementById('ts').textContent = ts;
-document.getElementById('nav-ts').textContent = ts;
+function _refreshTimestamp() {
+  const now = new Date();
+  const ts = now.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})
+           + ' · ' + now.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+  document.getElementById('ts').textContent = ts;
+  document.getElementById('nav-ts').textContent = ts;
+}
+_refreshTimestamp();
+setInterval(_refreshTimestamp, 60000);
 
 // rendering triggered by loadData() after async fetch completes
 
@@ -3073,7 +3078,7 @@ function _makeVibeCard(d, i) {
   <div style="padding:6px 12px 10px;border-top:1px solid var(--v3);display:flex;flex-direction:column;gap:8px">
     ${streamHref
       ? `<button class="tv-send-btn" style="min-width:auto;padding:10px 16px;font-size:13px"
-           onclick="event.stopPropagation();copyTitle('${d.title.replace(/'/g,"\\'")}', this)">
+           data-t="${_esc(d.title)}" onclick="event.stopPropagation();copyTitle(this.dataset.t, this)">
            <span class="tv-icon">📋</span> Copy Title
          </button>
          <a href="${streamHref}" target="_blank" class="jw-link" style="color:${platCol}">&#9654; Watch on ${d.platform||'platform'}</a>`
